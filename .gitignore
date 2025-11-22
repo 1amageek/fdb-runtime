@@ -1,0 +1,34 @@
+# Swift Package Manager
+.build/
+.swiftpm/
+Packages/
+Package.resolved
+
+# Xcode
+xcuserdata/
+DerivedData/
+*.xcodeproj
+*.xcworkspace
+
+# macOS
+.DS_Store
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Linux
+.build_linux/
+
+# Authentication
+.netrc
+
+# Test artifacts
+*.profraw
+*.profdata
+
+# Documentation build
+.docs/
