@@ -32,8 +32,8 @@ public protocol KeyExpressionVisitor {
 extension KeyExpressionVisitor {
     /// Default implementation of visitRangeBoundary that throws an error
     public func visitRangeBoundary(_ fieldName: String, _ component: RangeComponent) throws -> Result {
-        throw RecordAccessError.rangeFieldsNotSupported(
-            recordType: "Unknown",
+        throw DataAccessError.rangeFieldsNotSupported(
+            itemType: "Unknown",
             suggestion: "Override visitRangeBoundary() to support Range indexes."
         )
     }
@@ -66,8 +66,8 @@ extension KeyExpression {
                 return try visitor.visitLiteral(literalBase.anyValue)
             }
 
-            throw RecordAccessError.fieldNotFound(
-                recordType: "Unknown",
+            throw DataAccessError.fieldNotFound(
+                itemType: "Unknown",
                 fieldName: "Unsupported KeyExpression type: \(type(of: self))"
             )
         }

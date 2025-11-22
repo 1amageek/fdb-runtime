@@ -22,7 +22,7 @@ FDBRuntime provides the core abstractions and protocols for building type-safe, 
 - Storage abstractions
 
 **Solution**: FDBRuntime provides a **unified foundation** that:
-- ✅ Defines common protocols (IndexMaintainer, RecordAccess, IndexKind)
+- ✅ Defines common protocols (IndexMaintainer, DataAccess, IndexKind)
 - ✅ Provides shared implementations (FDBStore, IndexManager, built-in index types)
 - ✅ Enables multiple data models to coexist on the same infrastructure
 - ✅ Maintains type safety through Swift's type system
@@ -79,11 +79,11 @@ FDBRuntime consists of **three modules** with clear responsibilities:
 │  Dependencies: FDBCore + FoundationDB                   │
 │  Platform: macOS, Linux (server-only)                   │
 │                                                          │
-│  ✅ FDBStore (type-erased, shared across models)        │
+│  ✅ FDBStore (type-independent, operates on items)      │
 │  ✅ FDBContainer (container management)                 │
 │  ✅ FDBContext (change tracking, SwiftData-like API)    │
 │  ✅ IndexMaintainer protocol (index update interface)   │
-│  ✅ RecordAccess protocol (data access interface)       │
+│  ✅ DataAccess protocol (data access interface)         │
 │  ✅ IndexManager (index registration & management)      │
 └────────────┬────────────────────────────────────────────┘
              │ Implementations in data model layers
@@ -95,7 +95,7 @@ FDBRuntime consists of **three modules** with clear responsibilities:
 │                 │ │   -layer    │ │  -layer  │ │  -layer  │
 ├─────────────────┤ ├─────────────┤ ├──────────┤ ├──────────┤
 │ RecordStore     │ │DocumentStore│ │VectorStore││GraphStore│
-│ RecordAccess    │ │DocAccess    │ │VectorAccess│GraphAccess│
+│ DataAccess      │ │DataAccess   │ │DataAccess│ │DataAccess│
 │ IndexMaintainer │ │Maintainer   │ │Maintainer│ │Maintainer│
 │ QueryPlanner    │ │QueryBuilder │ │NNSearch  │ │Traversal │
 │ Recordable      │ │Document     │ │Vector    │ │Node/Edge │
@@ -108,7 +108,7 @@ FDBRuntime consists of **three modules** with clear responsibilities:
 |--------|---------------|------------------|--------------|
 | **FDBIndexing** | Index metadata abstractions (protocols + built-ins) | All platforms | None |
 | **FDBCore** | FDB-independent core, model definitions | All platforms | FDBIndexing |
-| **FDBRuntime** | Abstract runtime protocols + shared implementations | Server-only | FDBCore + FoundationDB |
+| **FDBRuntime** | Abstract runtime protocols + shared implementations (operates on type-independent "items") | Server-only | FDBCore + FoundationDB |
 
 ---
 
@@ -117,6 +117,8 @@ FDBRuntime consists of **three modules** with clear responsibilities:
 ### 1. **Shared FDBStore Across All Models**
 
 Unlike traditional approaches where each data model has its own store (RecordStore, DocumentStore, etc.), **FDBRuntime uses a single FDBStore** that is shared across all data model layers:
+
+> **Terminology Note**: FDBStore operates on **"items"** (type-independent data) internally, while upper layers (RecordStore, DocumentStore, etc.) work with typed **"records"** or **"documents"**. This distinction clarifies that FDBStore is a low-level storage abstraction operating on raw `Data`, not a type-safe layer.
 
 **Traditional (fragmented)**:
 ```swift
@@ -132,10 +134,10 @@ let vectorStore = VectorStore(...)
 // ✅ One FDBStore, multiple access patterns
 let store = container.store(for: subspace)
 
-// Different data models use the same store
-let recordAccess = RecordAccess<User>(store: store, schema: schema)
-let docAccess = DocumentAccess(store: store)
-let vectorAccess = VectorAccess(store: store, dimensions: 768)
+// Different data models use the same store (each implementing DataAccess protocol)
+let recordDataAccess = RecordDataAccess<User>(store: store, schema: schema)
+let docDataAccess = DocumentDataAccess(store: store)
+let vectorDataAccess = VectorDataAccess(store: store, dimensions: 768)
 ```
 
 ### 2. **Protocol-Based Extensibility**
@@ -185,7 +187,7 @@ Client (iOS/macOS)          Server (macOS/Linux)
 
 **Server-side**:
 - Uses `FDBRuntime` for full persistence
-- Implements IndexMaintainer, RecordAccess protocols
+- Implements IndexMaintainer, DataAccess protocols
 - Connects to FoundationDB cluster
 
 ---
@@ -269,6 +271,8 @@ struct User {
 }
 
 // FDBStore is shared across all models
+// Note: FDBStore internally operates on "items" (type-independent Data),
+//       while RecordStore provides type-safe "record" operations
 let container = FDBContainer(database: database)
 let subspace = try await container.getOrOpenDirectory(path: ["users"])
 let store = container.store(for: subspace)

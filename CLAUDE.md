@@ -620,14 +620,14 @@ default:
 
 2. **Protocol-Based Design in FDBRuntime**
    - `IndexMaintainer<Record>` protocol - defines interface for index maintenance
-   - `RecordAccess<Record>` protocol - defines interface for record field access
+   - `DataAccess<Item>` protocol - defines interface for item field access
    - Concrete implementations are in upper layers (e.g., fdb-record-layer)
    - This allows different data models to provide their own implementations
 
 3. **Separation of Concerns**
    - **FDBIndexing**: Only metadata (IndexKindProtocol, IndexDescriptor) - no FDB dependency
    - **FDBCore**: Recordable protocol + @Recordable macro - FDB-independent, works on iOS/macOS clients
-   - **FDBRuntime**: Store management (FDBStore, FDBContainer), protocols (IndexMaintainer, RecordAccess), built-in IndexKinds
+   - **FDBRuntime**: Store management (FDBStore, FDBContainer), protocols (IndexMaintainer, DataAccess), built-in IndexKinds
 
 4. **Macro-Generated Code**
    - The `@Recordable` macro generates metadata (recordName, primaryKeyFields, indexDescriptors)
@@ -641,7 +641,7 @@ default:
      - Reason: Avoids confusion with typed "Record" models in upper layers
    - **Upper layers** (fdb-record-layer, protocols): Uses **"record"** terminology
      - Type-dependent, works with `Recordable` protocol
-     - Parameters: `recordName`, `Record` generic type, `RecordAccess`, `IndexMaintainer<Record>`
+     - Parameters: `recordName`, `Record` generic type, `DataAccess`, `IndexMaintainer<Record>`
      - Reason: Domain language for typed data models
    - **Backward compatibility**: Subspace prefix remains "R" (not changed to "I" for items)
 
@@ -664,19 +664,20 @@ default:
 #### IndexMaintainer Protocol (Sources/FDBRuntime/IndexMaintainer.swift)
 - Protocol definition only (implementations in upper layers)
 - Key methods:
-  - `updateIndex(oldRecord:newRecord:recordAccess:transaction:)` - called on insert/update/delete
-  - `scanRecord(_:primaryKey:recordAccess:transaction:)` - called during batch indexing
+  - `updateIndex(oldRecord:newRecord:dataAccess:transaction:)` - called on insert/update/delete
+  - `scanRecord(_:primaryKey:dataAccess:transaction:)` - called during batch indexing
 
-#### RecordAccess Protocol (Sources/FDBRuntime/RecordAccess.swift)
-- Protocol for extracting metadata and field values from records
+#### DataAccess Protocol (Sources/FDBRuntime/DataAccess.swift)
+- Protocol for extracting metadata and field values from items
 - Key methods:
-  - `recordName(for:)` - get record type name (Note: upper layers still use "record" terminology for typed models)
-  - `evaluate(record:expression:)` - evaluate KeyExpression (uses Visitor pattern)
+  - `itemType(for:)` - get item type name
+  - `evaluate(item:expression:)` - evaluate KeyExpression (uses Visitor pattern)
   - `extractField(from:fieldName:)` - extract single field value
-  - `serialize(_:)` / `deserialize(_:)` - record serialization
+  - `serialize(_:)` / `deserialize(_:)` - item serialization
 - Default implementations provided via protocol extensions
 - Supports covering index reconstruction (optional via `supportsReconstruction`)
-- **Note**: RecordAccess is used by upper layers (fdb-record-layer) which work with typed Recordable models, hence the "record" terminology
+- **Note**: Upper layers (fdb-record-layer) implement DataAccess for their typed models (e.g., Recordable)
+- **Backward compatibility**: `RecordAccess<Record>` typealias available for existing code
 
 #### Recordable Protocol (Sources/FDBCore/Recordable.swift)
 - FDB-independent interface for records
@@ -760,5 +761,5 @@ This package is part of a larger ecosystem:
 - Macro implementation: `Sources/FDBCoreMacros/RecordableMacro.swift`
 - Store implementation: `Sources/FDBRuntime/FDBStore.swift`
 - Container: `Sources/FDBRuntime/FDBContainer.swift`
-- Protocol definitions: `Sources/FDBRuntime/IndexMaintainer.swift`, `Sources/FDBRuntime/RecordAccess.swift`
+- Protocol definitions: `Sources/FDBRuntime/IndexMaintainer.swift`, `Sources/FDBRuntime/DataAccess.swift`
 - Architecture documentation: `docs/architecture.md`

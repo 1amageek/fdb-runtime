@@ -2,16 +2,20 @@ import Foundation
 import FoundationDB
 import FDBIndexing
 
-/// Protocol for accessing record metadata and fields
+/// Protocol for accessing data item metadata and fields
 ///
-/// RecordAccess provides a unified interface for extracting metadata
-/// and field values from records, regardless of their underlying representation
+/// DataAccess provides a unified interface for extracting metadata
+/// and field values from data items, regardless of their underlying representation
 /// (structured records, documents, vectors, graphs, etc.).
 ///
+/// **Terminology Note**:
+/// - "Item" refers to type-independent data (consistent with FDBStore's "item" terminology)
+/// - Upper layers may use specific terms: "record" (Record Layer), "document" (Document Layer), etc.
+///
 /// **Responsibilities**:
-/// - Extract record type name
+/// - Extract item type name
 /// - Evaluate KeyExpressions to get field values
-/// - Serialize and deserialize records
+/// - Serialize and deserialize items
 /// - Extract range boundaries for Range-type fields
 /// - Support covering index reconstruction (optional)
 ///
@@ -24,19 +28,19 @@ import FDBIndexing
 ///
 /// **For Record layer (fdb-record-layer)**:
 /// ```swift
-/// struct GenericRecordAccess<Record: Recordable>: RecordAccess {
-///     func recordName(for record: Record) -> String {
+/// struct GenericDataAccess<Record: Recordable>: DataAccess {
+///     func itemType(for item: Record) -> String {
 ///         return Record.recordName
 ///     }
 ///
-///     func extractField(from record: Record, fieldName: String) throws -> [any TupleElement] {
+///     func extractField(from item: Record, fieldName: String) throws -> [any TupleElement] {
 ///         // Use Mirror API or macro-generated code
-///         return record.extractField(fieldName)
+///         return item.extractField(fieldName)
 ///     }
 ///
-///     func serialize(_ record: Record) throws -> FDB.Bytes {
+///     func serialize(_ item: Record) throws -> FDB.Bytes {
 ///         let encoder = ProtobufEncoder()
-///         let data = try encoder.encode(record)
+///         let data = try encoder.encode(item)
 ///         return Array(data)
 ///     }
 ///
@@ -49,20 +53,20 @@ import FDBIndexing
 ///
 /// **For Document layer (fdb-document-layer)**:
 /// ```swift
-/// struct DocumentAccess: RecordAccess {
-///     typealias Record = Document
+/// struct DocumentAccess: DataAccess {
+///     typealias Item = Document
 ///
-///     func recordName(for record: Document) -> String {
-///         return record.collection
+///     func itemType(for item: Document) -> String {
+///         return item.collection
 ///     }
 ///
-///     func extractField(from record: Document, fieldName: String) throws -> [any TupleElement] {
+///     func extractField(from item: Document, fieldName: String) throws -> [any TupleElement] {
 ///         // Extract field from JSON-like structure
-///         return record.get(fieldName)
+///         return item.get(fieldName)
 ///     }
 ///
-///     func serialize(_ record: Document) throws -> FDB.Bytes {
-///         return try JSONEncoder().encode(record)
+///     func serialize(_ item: Document) throws -> FDB.Bytes {
+///         return try JSONEncoder().encode(item)
 ///     }
 ///
 ///     func deserialize(_ bytes: FDB.Bytes) throws -> Document {
@@ -70,38 +74,38 @@ import FDBIndexing
 ///     }
 /// }
 /// ```
-public protocol RecordAccess<Record>: Sendable {
-    associatedtype Record: Sendable
+public protocol DataAccess<Item>: Sendable {
+    associatedtype Item: Sendable
 
     // MARK: - Metadata
 
-    /// Get the record type name
+    /// Get the item type name
     ///
-    /// The type name identifies the record type within the storage system.
+    /// The type name identifies the item type within the storage system.
     ///
-    /// - Parameter record: The record to get the type name from
-    /// - Returns: Record type name (e.g., "User", "Order", "Document")
-    func recordName(for record: Record) -> String
+    /// - Parameter item: The item to get the type name from
+    /// - Returns: Item type name (e.g., "User", "Order", "Document")
+    func itemType(for item: Item) -> String
 
     // MARK: - KeyExpression Evaluation
 
     /// Evaluate a KeyExpression to extract field values
     ///
     /// This method uses the Visitor pattern to traverse the KeyExpression tree
-    /// and extract the corresponding values from the record.
+    /// and extract the corresponding values from the item.
     ///
     /// **Default Implementation**:
-    /// A default implementation is provided that creates a RecordAccessEvaluator
+    /// A default implementation is provided that creates a DataAccessEvaluator
     /// and uses it to traverse the KeyExpression tree. Implementations can
     /// override this if they need custom evaluation logic.
     ///
     /// - Parameters:
-    ///   - record: The record to evaluate
+    ///   - item: The item to evaluate
     ///   - expression: The KeyExpression to evaluate
     /// - Returns: Array of tuple elements representing the extracted values
     /// - Throws: Error if field access fails
     func evaluate(
-        record: Record,
+        item: Item,
         expression: KeyExpression
     ) throws -> [any TupleElement]
 
@@ -115,12 +119,12 @@ public protocol RecordAccess<Record>: Sendable {
     /// - Nested field: "user.address.city" (dot notation)
     ///
     /// - Parameters:
-    ///   - record: The record to extract from
+    ///   - item: The item to extract from
     ///   - fieldName: The field name (supports dot notation)
     /// - Returns: Array of tuple elements (typically single element)
     /// - Throws: Error if field not found or type conversion fails
     func extractField(
-        from record: Record,
+        from item: Item,
         fieldName: String
     ) throws -> [any TupleElement]
 
@@ -140,41 +144,41 @@ public protocol RecordAccess<Record>: Sendable {
     /// this if they support Range-type fields.
     ///
     /// - Parameters:
-    ///   - record: The record to extract from
+    ///   - item: The item to extract from
     ///   - fieldName: The field name containing the Range type
     ///   - component: The boundary component to extract (lowerBound/upperBound)
     /// - Returns: Array containing the boundary value as TupleElement
     /// - Throws: Error if field not found or not a Range type
     func extractRangeBoundary(
-        from record: Record,
+        from item: Item,
         fieldName: String,
         component: RangeComponent
     ) throws -> [any TupleElement]
 
     // MARK: - Serialization
 
-    /// Serialize a record to bytes
+    /// Serialize an item to bytes
     ///
     /// The serialization format is implementation-dependent:
     /// - Record layer: Protobuf encoding
     /// - Document layer: JSON/BSON encoding
     /// - Vector layer: Custom binary format
     ///
-    /// - Parameter record: The record to serialize
+    /// - Parameter item: The item to serialize
     /// - Returns: Serialized bytes
     /// - Throws: Error if serialization fails
-    func serialize(_ record: Record) throws -> FDB.Bytes
+    func serialize(_ item: Item) throws -> FDB.Bytes
 
-    /// Deserialize bytes to a record
+    /// Deserialize bytes to an item
     ///
     /// - Parameter bytes: The bytes to deserialize
-    /// - Returns: Deserialized record
+    /// - Returns: Deserialized item
     /// - Throws: Error if deserialization fails
-    func deserialize(_ bytes: FDB.Bytes) throws -> Record
+    func deserialize(_ bytes: FDB.Bytes) throws -> Item
 
     // MARK: - Covering Index Support (Optional)
 
-    /// Check if this RecordAccess supports reconstruction from covering indexes
+    /// Check if this DataAccess supports reconstruction from covering indexes
     ///
     /// This allows the query planner to skip covering index plans
     /// for types that don't implement reconstruction.
@@ -184,10 +188,10 @@ public protocol RecordAccess<Record>: Sendable {
     /// **Override**: Return true if reconstruct() is implemented
     var supportsReconstruction: Bool { get }
 
-    /// Reconstruct a record from covering index key and value
+    /// Reconstruct an item from covering index key and value
     ///
     /// This method enables covering index optimization by reconstructing
-    /// records directly from index data without fetching from storage.
+    /// items directly from index data without fetching from storage.
     ///
     /// **Index Key Structure**: `<indexSubspace><rootExpression fields><primaryKey fields>`
     ///
@@ -199,49 +203,49 @@ public protocol RecordAccess<Record>: Sendable {
     ///   - indexValue: The index value (packed covering fields)
     ///   - index: The index definition
     ///   - primaryKeyExpression: Primary key expression for field extraction
-    /// - Returns: Reconstructed record
+    /// - Returns: Reconstructed item
     /// - Throws: Error if reconstruction is not supported or fails
     func reconstruct(
         indexKey: Tuple,
         indexValue: FDB.Bytes,
         index: Index,
         primaryKeyExpression: KeyExpression
-    ) throws -> Record
+    ) throws -> Item
 }
 
 // MARK: - Default Implementations
 
-extension RecordAccess {
+extension DataAccess {
     /// Default implementation of evaluate using Visitor pattern
     ///
-    /// This implementation creates a RecordAccessEvaluator and uses it
+    /// This implementation creates a DataAccessEvaluator and uses it
     /// to traverse the KeyExpression tree.
     ///
     /// - Parameters:
-    ///   - record: The record to evaluate
+    ///   - item: The item to evaluate
     ///   - expression: The KeyExpression to evaluate
     /// - Returns: Array of tuple elements
     /// - Throws: Error if evaluation fails
     public func evaluate(
-        record: Record,
+        item: Item,
         expression: KeyExpression
     ) throws -> [any TupleElement] {
-        let visitor = RecordAccessEvaluator(recordAccess: self, record: record)
+        let visitor = DataAccessEvaluator(dataAccess: self, item: item)
         return try expression.accept(visitor: visitor)
     }
 
-    /// Extract primary key from a record using the primary key expression
+    /// Extract primary key from an item using the primary key expression
     ///
     /// - Parameters:
-    ///   - record: The record to extract from
+    ///   - item: The item to extract from
     ///   - primaryKeyExpression: The KeyExpression defining the primary key
     /// - Returns: Tuple representing the primary key
     /// - Throws: Error if extraction fails
     public func extractPrimaryKey(
-        from record: Record,
+        from item: Item,
         using primaryKeyExpression: KeyExpression
     ) throws -> Tuple {
-        let elements = try evaluate(record: record, expression: primaryKeyExpression)
+        let elements = try evaluate(item: item, expression: primaryKeyExpression)
         return Tuple(elements)
     }
 
@@ -251,18 +255,18 @@ extension RecordAccess {
     /// if they support Range-type fields.
     ///
     /// - Parameters:
-    ///   - record: The record to extract from
+    ///   - item: The item to extract from
     ///   - fieldName: The field name containing the Range type
     ///   - component: The boundary component to extract
     /// - Returns: Array containing the boundary value
     /// - Throws: Error indicating Range fields are not supported
     public func extractRangeBoundary(
-        from record: Record,
+        from item: Item,
         fieldName: String,
         component: RangeComponent
     ) throws -> [any TupleElement] {
-        throw RecordAccessError.rangeFieldsNotSupported(
-            recordType: String(describing: Record.self),
+        throw DataAccessError.rangeFieldsNotSupported(
+            itemType: String(describing: Item.self),
             suggestion: "Override extractRangeBoundary() to support Range-type fields"
         )
     }
@@ -287,38 +291,38 @@ extension RecordAccess {
     ///   - indexValue: The index value
     ///   - index: The index definition
     ///   - primaryKeyExpression: Primary key expression
-    /// - Returns: Reconstructed record
+    /// - Returns: Reconstructed item
     /// - Throws: Error indicating reconstruction is not supported
     public func reconstruct(
         indexKey: Tuple,
         indexValue: FDB.Bytes,
         index: Index,
         primaryKeyExpression: KeyExpression
-    ) throws -> Record {
-        throw RecordAccessError.reconstructionNotSupported(
-            recordType: String(describing: Record.self),
+    ) throws -> Item {
+        throw DataAccessError.reconstructionNotSupported(
+            itemType: String(describing: Item.self),
             suggestion: """
-            To use covering indexes with this record type, override reconstruct().
+            To use covering indexes with this item type, override reconstruct().
             Set supportsReconstruction to true when reconstruction is implemented.
             """
         )
     }
 }
 
-// MARK: - RecordAccessEvaluator
+// MARK: - DataAccessEvaluator
 
-/// Visitor that evaluates KeyExpressions using RecordAccess
+/// Visitor that evaluates KeyExpressions using DataAccess
 ///
-/// This visitor traverses a KeyExpression tree and extracts values from a record
-/// using the provided RecordAccess implementation.
-private struct RecordAccessEvaluator<Access: RecordAccess>: KeyExpressionVisitor {
-    let recordAccess: Access
-    let record: Access.Record
+/// This visitor traverses a KeyExpression tree and extracts values from an item
+/// using the provided DataAccess implementation.
+private struct DataAccessEvaluator<Access: DataAccess>: KeyExpressionVisitor {
+    let dataAccess: Access
+    let item: Access.Item
 
     typealias Result = [any TupleElement]
 
     func visitField(_ fieldName: String) throws -> [any TupleElement] {
-        return try recordAccess.extractField(from: record, fieldName: fieldName)
+        return try dataAccess.extractField(from: item, fieldName: fieldName)
     }
 
     func visitConcatenate(_ expressions: [KeyExpression]) throws -> [any TupleElement] {
@@ -339,8 +343,8 @@ private struct RecordAccessEvaluator<Access: RecordAccess>: KeyExpressionVisitor
     }
 
     func visitRangeBoundary(_ fieldName: String, _ component: RangeComponent) throws -> [any TupleElement] {
-        return try recordAccess.extractRangeBoundary(
-            from: record,
+        return try dataAccess.extractRangeBoundary(
+            from: item,
             fieldName: fieldName,
             component: component
         )
@@ -350,7 +354,7 @@ private struct RecordAccessEvaluator<Access: RecordAccess>: KeyExpressionVisitor
         // For simple cases, combine parent and child with dot notation
         if let fieldExpr = child as? FieldKeyExpression {
             let nestedPath = "\(parentField).\(fieldExpr.fieldName)"
-            return try recordAccess.extractField(from: record, fieldName: nestedPath)
+            return try dataAccess.extractField(from: item, fieldName: nestedPath)
         }
 
         // For other cases, delegate to child's accept method
@@ -360,10 +364,23 @@ private struct RecordAccessEvaluator<Access: RecordAccess>: KeyExpressionVisitor
 
 // MARK: - Errors
 
-/// Errors that can occur during RecordAccess operations
-public enum RecordAccessError: Error {
-    case rangeFieldsNotSupported(recordType: String, suggestion: String)
-    case reconstructionNotSupported(recordType: String, suggestion: String)
-    case fieldNotFound(recordType: String, fieldName: String)
-    case typeMismatch(recordType: String, fieldName: String, expected: String, actual: String)
+/// Errors that can occur during DataAccess operations
+public enum DataAccessError: Error {
+    case rangeFieldsNotSupported(itemType: String, suggestion: String)
+    case reconstructionNotSupported(itemType: String, suggestion: String)
+    case fieldNotFound(itemType: String, fieldName: String)
+    case typeMismatch(itemType: String, fieldName: String, expected: String, actual: String)
 }
+
+// MARK: - Backward Compatibility
+
+/// Backward compatibility typealias
+///
+/// This allows existing code using RecordAccess to continue working
+/// while we transition to the more generic DataAccess terminology.
+@available(*, deprecated, renamed: "DataAccess")
+public typealias RecordAccess<Record> = DataAccess<Record> where Record: Sendable
+
+/// Backward compatibility typealias for errors
+@available(*, deprecated, renamed: "DataAccessError")
+public typealias RecordAccessError = DataAccessError

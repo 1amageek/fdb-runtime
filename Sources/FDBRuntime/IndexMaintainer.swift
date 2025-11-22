@@ -7,9 +7,9 @@ import FoundationDB
 /// Concrete implementations are provided by upper layers (fdb-record-layer, etc.).
 ///
 /// **Responsibilities**:
-/// - Update index entries when records change
+/// - Update index entries when items change
 /// - Build index entries during batch indexing
-/// - Use RecordAccess to extract field values
+/// - Use DataAccess to extract field values
 ///
 /// **Design**:
 /// - Protocol definition only in FDBRuntime
@@ -22,18 +22,18 @@ import FoundationDB
 ///     func updateIndex(
 ///         oldRecord: Record?,
 ///         newRecord: Record?,
-///         recordAccess: any RecordAccess<Record>,
+///         dataAccess: any DataAccess<Record>,
 ///         transaction: any TransactionProtocol
 ///     ) async throws {
 ///         // Remove old index entries
 ///         if let old = oldRecord {
-///             let oldValues = try recordAccess.evaluate(record: old, expression: index.rootExpression)
+///             let oldValues = try dataAccess.evaluate(item: old, expression: index.rootExpression)
 ///             // Remove from index...
 ///         }
 ///
 ///         // Add new index entries
 ///         if let new = newRecord {
-///             let newValues = try recordAccess.evaluate(record: new, expression: index.rootExpression)
+///             let newValues = try dataAccess.evaluate(item: new, expression: index.rootExpression)
 ///             // Add to index...
 ///         }
 ///     }
@@ -41,11 +41,11 @@ import FoundationDB
 ///     func scanRecord(
 ///         _ record: Record,
 ///         primaryKey: Tuple,
-///         recordAccess: any RecordAccess<Record>,
+///         dataAccess: any DataAccess<Record>,
 ///         transaction: any TransactionProtocol
 ///     ) async throws {
 ///         // Build index entries for this record
-///         let values = try recordAccess.evaluate(record: record, expression: index.rootExpression)
+///         let values = try dataAccess.evaluate(item: record, expression: index.rootExpression)
 ///         // Add to index...
 ///     }
 /// }
@@ -63,13 +63,13 @@ public protocol IndexMaintainer<Record>: Sendable {
     /// - Parameters:
     ///   - oldRecord: The old record (nil if inserting)
     ///   - newRecord: The new record (nil if deleting)
-    ///   - recordAccess: RecordAccess for extracting field values
+    ///   - dataAccess: DataAccess for extracting field values
     ///   - transaction: The transaction to use
     /// - Throws: Error if index update fails
     func updateIndex(
         oldRecord: Record?,
         newRecord: Record?,
-        recordAccess: any RecordAccess<Record>,
+        dataAccess: any DataAccess<Record>,
         transaction: any TransactionProtocol
     ) async throws
 
@@ -81,13 +81,13 @@ public protocol IndexMaintainer<Record>: Sendable {
     /// - Parameters:
     ///   - record: The record to scan
     ///   - primaryKey: The record's primary key
-    ///   - recordAccess: RecordAccess for extracting field values
+    ///   - dataAccess: DataAccess for extracting field values
     ///   - transaction: The transaction to use
     /// - Throws: Error if index building fails
     func scanRecord(
         _ record: Record,
         primaryKey: Tuple,
-        recordAccess: any RecordAccess<Record>,
+        dataAccess: any DataAccess<Record>,
         transaction: any TransactionProtocol
     ) async throws
 }
