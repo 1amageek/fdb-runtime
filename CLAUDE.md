@@ -379,6 +379,237 @@ let value = try await transaction.getValue(for: key, snapshot: true)
    }
    ```
 
+## FDBContainer and FDBContext Usage
+
+### SwiftData-like API (Recommended)
+
+**FDBContainer** provides a SwiftData-like API for simplified initialization and usage. This is the recommended approach for most applications.
+
+#### Basic Initialization
+
+```swift
+import FDBRuntime
+
+// 1. Application startup (once per process)
+// IMPORTANT: Call this globally before creating any FDBContainer
+try await FDBClient.initialize()
+
+// 2. Create schema and configuration
+let schema = Schema(
+    entities: [
+        // Define your entities here
+        Schema.Entity(
+            name: "User",
+            allFields: ["userID", "email", "name"],
+            indexDescriptors: [],
+            enumMetadata: [:]
+        )
+    ],
+    version: Schema.Version(1, 0, 0)
+)
+
+let config = FDBConfiguration(schema: schema)
+
+// 3. Create container (SwiftData-like API)
+let container = try FDBContainer(configurations: [config])
+
+// 4. Access main context
+let context = await container.mainContext
+
+// 5. Use context for data operations
+let userData = // ... serialize your data
+context.insert(
+    data: userData,
+    for: "User",
+    primaryKey: Tuple(123),
+    subspace: try await container.getOrOpenDirectory(path: ["users"])
+)
+
+// 6. Save changes
+try await context.save()
+```
+
+#### Key Concepts
+
+**FDBConfiguration**: SwiftData-compatible configuration object that specifies:
+- Schema (entities and indexes)
+- Cluster file path (optional)
+- API version (optional, for documentation only)
+- In-memory mode (future feature)
+
+**FDBContainer**: Manages:
+- Database connection
+- Schema versioning
+- FDBStore lifecycle (creation and caching)
+- FDBContext (change tracking)
+- DirectoryLayer (singleton)
+- Migrations
+
+**FDBContext**: Provides change tracking and batch operations:
+- `insert()`: Stage data for insertion
+- `delete()`: Stage data for deletion
+- `save()`: Atomically commit all changes
+- `rollback()`: Discard all pending changes
+- `hasChanges`: Check if there are unsaved changes
+
+#### Important Notes
+
+1. **Global Initialization**: `FDBClient.initialize()` must be called **once** at application startup, **before** creating any FDBContainer:
+   ```swift
+   // ✅ Correct: Global initialization
+   @main
+   struct MyApp {
+       static func main() async throws {
+           // Initialize FDB (once)
+           try await FDBClient.initialize()
+
+           // Create containers as needed
+           let container = try FDBContainer(configurations: [config])
+
+           // ... rest of application
+       }
+   }
+   ```
+
+2. **API Version**: If specified in FDBConfiguration, it's for documentation only. The actual API version must be selected globally via `FDBClient.selectAPIVersion()` before initialization:
+   ```swift
+   // Optional: Select specific API version (before initialize)
+   try FDBClient.selectAPIVersion(710)  // FDB 7.1.0
+
+   // Initialize FDB
+   try await FDBClient.initialize()
+   ```
+
+3. **MainContext**: The main context is created lazily and must be accessed from `@MainActor`:
+   ```swift
+   @MainActor
+   func performDatabaseOperation() async throws {
+       let context = container.mainContext
+       // ... use context
+   }
+   ```
+
+#### Example: Complete Application
+
+```swift
+import FDBRuntime
+import Foundation
+
+@main
+struct MyApp {
+    static func main() async throws {
+        // 1. Global FDB initialization (once)
+        try await FDBClient.initialize()
+
+        // 2. Define schema
+        let schema = Schema(
+            entities: [
+                Schema.Entity(
+                    name: "User",
+                    allFields: ["userID", "email", "name"],
+                    indexDescriptors: [],
+                    enumMetadata: [:]
+                )
+            ],
+            version: Schema.Version(1, 0, 0)
+        )
+
+        // 3. Create configuration
+        let config = FDBConfiguration(schema: schema)
+
+        // 4. Create container (SwiftData-like API)
+        let container = try FDBContainer(configurations: [config])
+
+        // 5. Get directory for users
+        let userSubspace = try await container.getOrOpenDirectory(path: ["users"])
+
+        // 6. Access main context
+        let context = await container.mainContext
+
+        // 7. Insert data
+        let userData = // ... serialize your data
+        context.insert(
+            data: userData,
+            for: "User",
+            primaryKey: Tuple(123),
+            subspace: userSubspace
+        )
+
+        // 8. Save changes
+        try await context.save()
+
+        print("User saved successfully")
+    }
+}
+```
+
+### Low-Level API (Advanced)
+
+For advanced use cases where you need manual control over database initialization:
+
+```swift
+import FDBRuntime
+
+// 1. Manual initialization
+try await FDBClient.initialize()
+let database = try FDBClient.openDatabase()
+
+// 2. Create schema
+let schema = Schema(...)
+
+// 3. Create container with explicit database
+let container = FDBContainer(
+    database: database,
+    schema: schema,
+    migrations: [],
+    rootSubspace: nil,  // Optional: for multi-tenant isolation
+    directoryLayer: nil,  // Optional: for test isolation
+    logger: nil  // Optional: custom logger
+)
+
+// 4. Use container...
+```
+
+### Testing with FDBContainer
+
+For tests, use a custom DirectoryLayer for isolation:
+
+```swift
+import Testing
+@testable import FDBRuntime
+
+@Suite("FDBContainer Tests")
+struct FDBContainerTests {
+
+    @Test func testContainerInitialization() async throws {
+        // Use global FDB initialization
+        await FDBTestEnvironment.shared.ensureInitialized()
+
+        let database = try FDBClient.openDatabase()
+
+        // Create test-specific subspace
+        let testSubspace = Subspace(prefix: Tuple("test", UUID().uuidString).pack())
+
+        // Create custom DirectoryLayer for isolation
+        let testDirectoryLayer = DirectoryLayer(
+            database: database,
+            nodeSubspace: testSubspace.subspace(0xFE),
+            contentSubspace: testSubspace
+        )
+
+        // Create container with test DirectoryLayer
+        let schema = Schema(entities: [], version: Schema.Version(1, 0, 0))
+        let config = FDBConfiguration(schema: schema)
+        let container = try FDBContainer(
+            configurations: [config],
+            directoryLayer: testDirectoryLayer
+        )
+
+        // ... test operations
+    }
+}
+```
+
 ## Architecture and Design Principles
 
 ### Layered Architecture
@@ -1075,17 +1306,17 @@ public struct Index: Sendable {
     public let type: any IndexKind  // Concrete protocol type
     public let rootExpression: KeyExpression  // Complex tree structure
     public let subspaceKey: String
-    public let recordTypes: Set<String>?
+    public let itemTypes: Set<String>?
 }
 
 // Conversion: Metadata → Runtime
 extension Index {
-    public init(descriptor: IndexDescriptor, recordType: String) throws {
+    public init(descriptor: IndexDescriptor, itemType: String) throws {
         self.name = descriptor.name
         self.type = descriptor.kind  // Decode to concrete IndexKind
         self.rootExpression = try KeyExpression.fromKeyPaths(descriptor.keyPaths)
         self.subspaceKey = descriptor.name
-        self.recordTypes = Set([recordType])
+        self.itemTypes = Set([itemType])
     }
 }
 ```

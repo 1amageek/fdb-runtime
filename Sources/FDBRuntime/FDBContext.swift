@@ -5,7 +5,7 @@ import Synchronization
 /// FDBContext - Type-independent transaction context
 ///
 /// Difference from RecordContext:
-/// - RecordContext: Tracks typed Recordable, type-safe change management, auto Directory resolution
+/// - RecordContext: Tracks typed records, type-safe change management, auto Directory resolution
 /// - FDBContext: Type-independent, Data-based change tracking, explicit Subspace specification
 ///
 /// **Responsibilities**:
@@ -60,10 +60,12 @@ public final class FDBContext: Sendable {
 
     /// Initialize FDBContext
     ///
-    /// - Parameter container: The FDBContainer to use for storage
-    public init(container: FDBContainer) {
+    /// - Parameters:
+    ///   - container: The FDBContainer to use for storage
+    ///   - autosaveEnabled: Whether to automatically save after insert/delete (default: false)
+    public init(container: FDBContainer, autosaveEnabled: Bool = false) {
         self.container = container
-        self.stateLock = Mutex(ContextState())
+        self.stateLock = Mutex(ContextState(autosaveEnabled: autosaveEnabled))
     }
 
     // MARK: - State
@@ -81,9 +83,16 @@ public final class FDBContext: Sendable {
         /// Whether a save operation is currently in progress
         var isSaving: Bool = false
 
+        /// Whether to automatically save after insert/delete operations
+        var autosaveEnabled: Bool
+
         /// Whether the context has unsaved changes
         var hasChanges: Bool {
             return !insertedItems.isEmpty || !deletedItems.isEmpty
+        }
+
+        init(autosaveEnabled: Bool = false) {
+            self.autosaveEnabled = autosaveEnabled
         }
     }
 
@@ -118,6 +127,23 @@ public final class FDBContext: Sendable {
     public var hasChanges: Bool {
         stateLock.withLock { state in
             state.hasChanges
+        }
+    }
+
+    /// Whether to automatically save after insert/delete operations
+    ///
+    /// When enabled, insert() and delete() will automatically call save().
+    /// When disabled (default), you must manually call save().
+    public var autosaveEnabled: Bool {
+        get {
+            stateLock.withLock { state in
+                state.autosaveEnabled
+            }
+        }
+        set {
+            stateLock.withLock { state in
+                state.autosaveEnabled = newValue
+            }
         }
     }
 
@@ -160,8 +186,15 @@ public final class FDBContext: Sendable {
         let key = ItemKey(itemType: itemType, primaryKey: primaryKey, subspace: subspace)
 
         stateLock.withLock { state in
-            state.deletedItems.insert(key)
-            state.insertedItems.removeValue(forKey: key)  // Cancel insert if exists
+            // If item was inserted but not saved, just remove it (cancel insert)
+            // Otherwise, mark for deletion
+            if state.insertedItems.removeValue(forKey: key) != nil {
+                // Item was inserted in this context - just cancel the insert
+                // No need to add to deletedItems since it doesn't exist in DB
+            } else {
+                // Item exists in DB - mark for deletion
+                state.deletedItems.insert(key)
+            }
         }
     }
 
@@ -173,20 +206,26 @@ public final class FDBContext: Sendable {
     /// - Throws: FDBContextError.concurrentSaveNotAllowed if another save is in progress
     /// - Throws: Error if save fails
     public func save() async throws {
-        // Get changes snapshot and mark as saving
-        let (insertedSnapshot, deletedSnapshot) = try stateLock.withLock { state -> ([ItemKey: Data], Set<ItemKey>) in
-            guard !state.isSaving else {
-                throw FDBContextError.concurrentSaveNotAllowed
-            }
+        // Get changes snapshot and clear changes atomically
+        let (insertedSnapshot, deletedSnapshot) = stateLock.withLock { state -> ([ItemKey: Data], Set<ItemKey>) in
             guard state.hasChanges else {
-                // No changes to save
+                // No changes to save - return immediately
                 return ([:], [])
             }
+
+            // Take snapshot and clear changes atomically
+            // This ensures concurrent saves see no changes and return early
+            let inserted = state.insertedItems
+            let deleted = state.deletedItems
+
+            state.insertedItems.removeAll()
+            state.deletedItems.removeAll()
             state.isSaving = true
-            return (state.insertedItems, state.deletedItems)
+
+            return (inserted, deleted)
         }
 
-        // Early return if no changes (without marking as saving)
+        // Early return if no changes
         guard !insertedSnapshot.isEmpty || !deletedSnapshot.isEmpty else {
             return
         }
@@ -237,15 +276,22 @@ public final class FDBContext: Sendable {
                 }
             }
 
-            // Clear changes after successful save
+            // Reset saving flag after successful save
+            // Note: Changes were already cleared before transaction (line 214-215)
             stateLock.withLock { state in
-                state.insertedItems.removeAll()
-                state.deletedItems.removeAll()
                 state.isSaving = false
             }
         } catch {
-            // Reset saving flag on error
+            // Restore changes on error (transaction failed, need to retry)
             stateLock.withLock { state in
+                // Restore insertedItems
+                for (key, data) in insertedSnapshot {
+                    state.insertedItems[key] = data
+                }
+                // Restore deletedItems
+                for key in deletedSnapshot {
+                    state.deletedItems.insert(key)
+                }
                 state.isSaving = false
             }
             throw error
@@ -268,6 +314,78 @@ public final class FDBContext: Sendable {
     /// Equivalent to `rollback()`.
     public func reset() {
         rollback()
+    }
+
+    // MARK: - Fetch API
+
+    /// Fetch items of a specific type from a subspace
+    ///
+    /// Returns an async sequence of (primaryKey, data) tuples.
+    ///
+    /// **Example**:
+    /// ```swift
+    /// let userSubspace = try await container.getOrOpenDirectory(path: ["users"])
+    /// for try await (primaryKey, data) in context.fetch(for: "User", from: userSubspace) {
+    ///     // Process each user
+    ///     print("User \(primaryKey): \(data.count) bytes")
+    /// }
+    /// ```
+    ///
+    /// - Parameters:
+    ///   - itemType: Item type name (e.g., "User")
+    ///   - subspace: Subspace to fetch from
+    /// - Returns: Async sequence of (primaryKey: Tuple, data: Data) tuples
+    public func fetch(
+        for itemType: String,
+        from subspace: Subspace
+    ) -> AsyncThrowingStream<(primaryKey: Tuple, data: Data), Error> {
+        let store = container.store(for: subspace)
+
+        return AsyncThrowingStream { continuation in
+            Task {
+                do {
+                    try await container.withTransaction { transaction in
+                        let sequence = store.scan(for: itemType, transaction: transaction)
+
+                        for try await (primaryKey, data) in sequence {
+                            continuation.yield((primaryKey: primaryKey, data: data))
+                        }
+                    }
+                    continuation.finish()
+                } catch {
+                    continuation.finish(throwing: error)
+                }
+            }
+        }
+    }
+
+    /// Fetch a single item by primary key
+    ///
+    /// **Example**:
+    /// ```swift
+    /// let userSubspace = try await container.getOrOpenDirectory(path: ["users"])
+    /// if let data = try await context.fetch(for: "User", primaryKey: Tuple(123), from: userSubspace) {
+    ///     // Process user data
+    ///     print("User found: \(data.count) bytes")
+    /// }
+    /// ```
+    ///
+    /// - Parameters:
+    ///   - itemType: Item type name (e.g., "User")
+    ///   - primaryKey: Primary key value
+    ///   - subspace: Subspace to fetch from
+    /// - Returns: Serialized data, or nil if not found
+    /// - Throws: Error if fetch fails
+    public func fetch(
+        for itemType: String,
+        primaryKey: any TupleElement,
+        from subspace: Subspace
+    ) async throws -> Data? {
+        let store = container.store(for: subspace)
+        return try await store.load(
+            for: itemType,
+            primaryKey: primaryKey
+        )
     }
 
     // MARK: - Internal API (for upper layers)

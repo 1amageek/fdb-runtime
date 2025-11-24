@@ -22,8 +22,11 @@ public struct Index: Sendable {
     /// Subspace key (defaults to index name)
     public let subspaceKey: String
 
-    /// Record types this index applies to (nil = universal, applies to all types)
-    public let recordTypes: Set<String>?
+    /// Item types this index applies to (nil = universal, applies to all types)
+    ///
+    /// **Terminology**: Uses "itemTypes" (not "recordTypes") for layer-independent terminology.
+    /// Compatible with Persistable types across all layers (record-layer, graph-layer, document-layer).
+    public let itemTypes: Set<String>?
 
     // MARK: - Initialization
 
@@ -34,18 +37,18 @@ public struct Index: Sendable {
     ///   - kind: Index kind (any IndexKind protocol implementation)
     ///   - rootExpression: Expression defining indexed fields
     ///   - subspaceKey: Optional subspace key (defaults to name)
-    ///   - recordTypes: Optional set of record type names this index applies to
+    ///   - itemTypes: Optional set of item type names this index applies to (nil = universal)
     public init(
         name: String,
         kind: any IndexKind,
         rootExpression: KeyExpression,
         subspaceKey: String? = nil,
-        recordTypes: Set<String>? = nil
+        itemTypes: Set<String>? = nil
     ) {
         self.name = name
         self.kind = kind
         self.rootExpression = rootExpression
         self.subspaceKey = subspaceKey ?? name
-        self.recordTypes = recordTypes
+        self.itemTypes = itemTypes
     }
 }

@@ -6,7 +6,7 @@ import Logging
 /// FDBStore - Type-independent generic data store
 ///
 /// Difference from RecordStore:
-/// - RecordStore<Record: Recordable>: Typed, type-safe
+/// - RecordStore: Typed, type-safe (upper layer)
 /// - FDBStore: Type-independent, handles Data directly
 ///
 /// **Responsibilities**:

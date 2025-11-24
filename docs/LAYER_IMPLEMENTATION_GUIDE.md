@@ -2844,7 +2844,7 @@ let index = Index(
     kind: ScalarIndexKind(),
     rootExpression: FieldKeyExpression(fieldName: "myField"),
     subspaceKey: "MyIndex",
-    recordTypes: ["MyItem"]
+    itemTypes: ["MyItem"]
 )
 try indexManager.register(index: index)
 

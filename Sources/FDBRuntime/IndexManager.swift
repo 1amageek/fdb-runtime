@@ -160,12 +160,12 @@ public final class IndexManager: Sendable {
     public func indexes(for itemType: String) -> [Index] {
         return indexRegistry.withLock { registry in
             registry.values.filter { index in
-                // Universal indexes (recordTypes == nil) apply to all types
-                if index.recordTypes == nil {
+                // Universal indexes (itemTypes == nil) apply to all types
+                if index.itemTypes == nil {
                     return true
                 }
-                // Check if this item type is in the index's record types
-                return index.recordTypes?.contains(itemType) ?? false
+                // Check if this item type is in the index's item types
+                return index.itemTypes?.contains(itemType) ?? false
             }
         }
     }
