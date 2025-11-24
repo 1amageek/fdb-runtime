@@ -66,8 +66,8 @@ FDBRuntime consists of **three modules** with clear responsibilities:
 │  Dependencies: FDBIndexing + Swift stdlib               │
 │  Platform: iOS, macOS, Linux, tvOS, watchOS, visionOS   │
 │                                                          │
-│  ✅ Recordable protocol                                 │
-│  ✅ @Recordable macro (FDBCoreMacros)                   │
+│  ✅ Persistable protocol                                 │
+│  ✅ @Persistable macro (FDBCoreMacros)                  │
 │  ✅ EnumMetadata                                        │
 │  ✅ Codable support (JSON, Protobuf)                    │
 └────────────┬────────────────────────────────────────────┘
@@ -98,7 +98,7 @@ FDBRuntime consists of **three modules** with clear responsibilities:
 │ DataAccess impl │ │DataAccess   │ │DataAccess│ │DataAccess│
 │ IndexMaintainer │ │impl         │ │impl      │ │impl      │
 │ QueryPlanner    │ │QueryBuilder │ │NNSearch  │ │Traversal │
-│ Recordable      │ │Document     │ │Vector    │ │Node/Edge │
+│ Persistable     │ │Document     │ │Vector    │ │Node/Edge │
 └─────────────────┘ └─────────────┘ └──────────┘ └──────────┘
 ```
 
@@ -121,7 +121,7 @@ FDBRuntime uses precise terminology to clarify abstraction levels:
 | Layer | Term | Meaning | Type |
 |-------|------|---------|------|
 | **FDBRuntime** | **item** | Type-independent data unit | `Data` (raw bytes) |
-| **Upper layers** | **record/document/vector** | Type-specific data unit | `Recordable`, `Document`, etc. |
+| **Upper layers** | **record/document/vector** | Type-specific data unit | `Persistable`, `Document`, etc. |
 
 **FDBStore operates on items**:
 ```swift
@@ -178,7 +178,7 @@ public protocol DataAccess<Item>: Sendable {
 
 // Implementations (in data model layers)
 // fdb-record-layer:
-struct RecordDataAccess<Record: Recordable>: DataAccess { ... }
+struct RecordDataAccess<Record: Persistable>: DataAccess { ... }
 
 // fdb-document-layer:
 struct DocumentDataAccess: DataAccess { ... }
@@ -270,7 +270,7 @@ targets: [
 import FDBCore
 
 // Define model (SSOT)
-@Recordable
+@Persistable
 struct User {
     #PrimaryKey<User>([\.userID])
     var userID: Int64
@@ -295,7 +295,7 @@ import FDBRuntime   // FDBStore, protocols
 import FDBRecordLayer  // Type-safe extensions
 
 // Define model with indexes
-@Recordable
+@Persistable
 struct User {
     #PrimaryKey<User>([\.userID])
     #Index<User>([\.email], type: ScalarIndexKind())
@@ -397,7 +397,7 @@ public protocol IndexKind: Sendable, Codable, Hashable {
 import FDBCore
 import FDBIndexing  // Built-in IndexKinds
 
-@Recordable
+@Persistable
 struct Product {
     #PrimaryKey<Product>([\.productID])
 
@@ -416,7 +416,7 @@ struct Product {
 
 **Vector Indexes** (with algorithm selection):
 ```swift
-@Recordable
+@Persistable
 struct Product {
     #PrimaryKey<Product>([\.productID])
 
