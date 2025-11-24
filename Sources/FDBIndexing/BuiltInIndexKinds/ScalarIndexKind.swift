@@ -5,6 +5,7 @@
 // on Comparable fields.
 
 import Foundation
+import FoundationDB
 
 /// Scalar (VALUE) index kind
 ///
@@ -38,7 +39,7 @@ import Foundation
 ///     commonOptions: .init()
 /// )
 /// ```
-public struct ScalarIndexKind: IndexKindProtocol {
+public struct ScalarIndexKind: IndexKind {
     /// Kind identifier (built-in kinds use lowercase words)
     public static let identifier = "scalar"
 
@@ -73,24 +74,20 @@ public struct ScalarIndexKind: IndexKindProtocol {
     /// ```
     ///
     /// - Parameter types: Array of indexed field types
-    /// - Throws: IndexTypeValidationError.unsupportedType
+    /// - Throws: IndexError.invalidConfiguration
     public static func validateTypes(_ types: [Any.Type]) throws {
         // At least one field is required
         guard !types.isEmpty else {
-            throw IndexTypeValidationError.invalidTypeCount(
-                index: identifier,
-                expected: 1,
-                actual: 0
+            throw IndexError.invalidConfiguration(
+                "Scalar index requires at least 1 field, got 0"
             )
         }
 
         // All fields must conform to Comparable
         for type in types {
             guard TypeValidation.isComparable(type) else {
-                throw IndexTypeValidationError.unsupportedType(
-                    index: identifier,
-                    type: type,
-                    reason: "Scalar index requires Comparable types"
+                throw IndexError.invalidConfiguration(
+                    "Scalar index requires Comparable types, got \(type)"
                 )
             }
         }
@@ -103,4 +100,15 @@ public struct ScalarIndexKind: IndexKindProtocol {
     /// let kind = try IndexKind(ScalarIndexKind())
     /// ```
     public init() {}
+
+    /// Create index maintainer (placeholder - actual implementation in upper layers)
+    ///
+    /// **Note**: Built-in index kinds in fdb-runtime do not provide maintainers.
+    /// Maintainers are implemented in upper layers (e.g., fdb-record-layer, fdb-indexes).
+    ///
+    /// - Parameters:
+    ///   - index: Index definition
+    ///   - subspace: FDB subspace for this index
+    ///   - configuration: Runtime algorithm configuration (ignored for scalar indexes)
+    /// - Throws: IndexError.invalidConfiguration
 }

@@ -3,12 +3,12 @@ import Foundation
 import FDBIndexing
 @testable import FDBCore
 
-@Suite("Model Protocol Tests")
-struct ModelProtocolTests {
+@Suite("Persistable Protocol Tests")
+struct PersistableProtocolTests {
 
-    // Test struct implementing Model manually
-    struct TestUser: Model {
-        static var modelName: String { "TestUser" }
+    // Test struct implementing Persistable manually
+    struct TestUser: Persistable, Codable, Sendable {
+        static var persistableType: String { "TestUser" }
         static var primaryKeyFields: [String] { ["userID"] }
         static var allFields: [String] { ["userID", "email", "name"] }
         static var indexDescriptors: [IndexDescriptor] { [] }
@@ -33,7 +33,7 @@ struct ModelProtocolTests {
 
     @Test("Model modelName")
     func testModelName() {
-        #expect(TestUser.modelName == "TestUser")
+        #expect(TestUser.persistableType == "TestUser")
     }
 
     @Test("Model primaryKeyFields")

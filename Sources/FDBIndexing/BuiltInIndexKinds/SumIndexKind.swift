@@ -5,6 +5,7 @@
 // Stores Int64 sum value for each grouping key.
 
 import Foundation
+import FoundationDB
 
 /// SUM aggregation index kind
 ///
@@ -49,7 +50,7 @@ import Foundation
 /// )
 /// // → Int64 (e.g., 50000000)
 /// ```
-public struct SumIndexKind: IndexKindProtocol {
+public struct SumIndexKind: IndexKind {
     /// Kind identifier (built-in kinds use lowercase words)
     public static let identifier = "sum"
 
@@ -91,14 +92,12 @@ public struct SumIndexKind: IndexKindProtocol {
     /// ```
     ///
     /// - Parameter types: Array of field types (grouping + value)
-    /// - Throws: IndexTypeValidationError
+    /// - Throws: IndexError.invalidConfiguration
     public static func validateTypes(_ types: [Any.Type]) throws {
         // At least 2 fields required (grouping 1 + value 1)
         guard types.count >= 2 else {
-            throw IndexTypeValidationError.invalidTypeCount(
-                index: identifier,
-                expected: 2,
-                actual: types.count
+            throw IndexError.invalidConfiguration(
+                "Sum index requires at least 2 fields (grouping + value), got \(types.count)"
             )
         }
 
@@ -106,10 +105,8 @@ public struct SumIndexKind: IndexKindProtocol {
         let groupingFields = types.dropLast()
         for type in groupingFields {
             guard TypeValidation.isComparable(type) else {
-                throw IndexTypeValidationError.unsupportedType(
-                    index: identifier,
-                    type: type,
-                    reason: "Sum index requires Comparable types for grouping fields"
+                throw IndexError.invalidConfiguration(
+                    "Sum index requires Comparable types for grouping fields, got \(type)"
                 )
             }
         }
@@ -120,10 +117,8 @@ public struct SumIndexKind: IndexKindProtocol {
             fatalError("Internal error: types array is empty after validation")
         }
         guard TypeValidation.isNumeric(valueField) else {
-            throw IndexTypeValidationError.unsupportedType(
-                index: identifier,
-                type: valueField,
-                reason: "Sum index requires numeric type (Int, Int64, Double, etc.) for value field"
+            throw IndexError.invalidConfiguration(
+                "Sum index requires numeric type (Int, Int64, Double, etc.) for value field, got \(valueField)"
             )
         }
     }
@@ -135,4 +130,6 @@ public struct SumIndexKind: IndexKindProtocol {
     /// let kind = try IndexKind(SumIndexKind())
     /// ```
     public init() {}
+
+    /// Create index maintainer (placeholder - actual implementation in upper layers)
 }

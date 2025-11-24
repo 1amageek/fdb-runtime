@@ -5,6 +5,7 @@
 // Uses FDB's ordered key characteristics to get maximum value in O(log n).
 
 import Foundation
+import FoundationDB
 
 /// MAX aggregation index kind
 ///
@@ -50,7 +51,7 @@ import Foundation
 /// )
 /// // → Comparable value (e.g., 29800.0)
 /// ```
-public struct MaxIndexKind: IndexKindProtocol {
+public struct MaxIndexKind: IndexKind {
     /// Kind identifier (built-in kinds use lowercase words)
     public static let identifier = "max"
 
@@ -97,24 +98,20 @@ public struct MaxIndexKind: IndexKindProtocol {
     /// ```
     ///
     /// - Parameter types: Array of field types (grouping + value)
-    /// - Throws: IndexTypeValidationError
+    /// - Throws: IndexError.invalidConfiguration
     public static func validateTypes(_ types: [Any.Type]) throws {
         // At least 2 fields required (grouping 1 + value 1)
         guard types.count >= 2 else {
-            throw IndexTypeValidationError.invalidTypeCount(
-                index: identifier,
-                expected: 2,
-                actual: types.count
+            throw IndexError.invalidConfiguration(
+                "Max index requires at least 2 fields (grouping + value), got \(types.count)"
             )
         }
 
         // All fields must conform to Comparable
         for type in types {
             guard TypeValidation.isComparable(type) else {
-                throw IndexTypeValidationError.unsupportedType(
-                    index: identifier,
-                    type: type,
-                    reason: "Max index requires Comparable types for all fields"
+                throw IndexError.invalidConfiguration(
+                    "Max index requires Comparable types for all fields, got \(type)"
                 )
             }
         }
@@ -127,4 +124,6 @@ public struct MaxIndexKind: IndexKindProtocol {
     /// let kind = try IndexKind(MaxIndexKind())
     /// ```
     public init() {}
+
+    /// Create index maintainer (placeholder - actual implementation in upper layers)
 }

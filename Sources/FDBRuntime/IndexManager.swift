@@ -1,16 +1,49 @@
 import Foundation
 import FoundationDB
+import FDBIndexing
 import Synchronization
 
 /// IndexManager coordinates index registration and state management
 ///
 /// **Design**: FDBRuntime's IndexManager is a lightweight registry that:
-/// - Registers indexes by name
+/// - Registers indexes by name (in-memory only, not persisted)
 /// - Manages index states via IndexStateManager
 /// - Provides lookup methods for indexes
 ///
 /// **Note**: Actual index maintenance (IndexMaintainer implementations) is
 /// handled by upper layers (fdb-record-layer, fdb-document-layer, etc.).
+///
+/// **⚠️ Important: Index Registration Persistence**:
+///
+/// Index definitions are stored **in-memory only** (not persisted to FDB).
+/// This design allows upper layers to control index definition storage and versioning.
+///
+/// **Bootstrap Requirements**:
+/// 1. **Application Startup**: You must re-register all indexes on each process start
+/// 2. **Multiple Instances**: Each process must register the same set of indexes
+/// 3. **Upper Layer Responsibility**: Schema persistence is handled by upper layers
+///    (e.g., RecordLayer stores IndexDescriptor in schema metadata)
+///
+/// **Typical Bootstrap Pattern**:
+/// ```swift
+/// // 1. Load schema from FDB (upper layer responsibility)
+/// let schema = try await loadSchema(from: database)
+///
+/// // 2. Register all indexes from schema
+/// let indexManager = IndexManager(database: database, subspace: subspace)
+/// for indexDescriptor in schema.indexes {
+///     let index = try Index(from: indexDescriptor, recordType: ...)
+///     try indexManager.register(index: index)
+/// }
+///
+/// // 3. Now ready to use
+/// let state = try await indexManager.state(of: "user_by_email")
+/// ```
+///
+/// **State Management Validation**:
+/// - `enable()`, `makeReadable()`, and `disable()` now validate that the index
+///   is registered before allowing state transitions
+/// - This prevents accidentally managing state for non-existent indexes
 ///
 /// **Usage Example**:
 /// ```swift
@@ -20,7 +53,7 @@ import Synchronization
 /// )
 ///
 /// // Register an index
-/// indexManager.register(index: emailIndex)
+/// try indexManager.register(index: emailIndex)
 ///
 /// // Get index state
 /// let state = try await indexManager.state(of: "user_by_email")
@@ -120,19 +153,19 @@ public final class IndexManager: Sendable {
         }
     }
 
-    /// Get indexes for a specific record type
+    /// Get indexes for a specific item type
     ///
-    /// - Parameter recordName: The record type name
-    /// - Returns: Array of indexes that apply to this record type
-    public func indexes(for recordName: String) -> [Index] {
+    /// - Parameter itemType: The item type name
+    /// - Returns: Array of indexes that apply to this item type
+    public func indexes(for itemType: String) -> [Index] {
         return indexRegistry.withLock { registry in
             registry.values.filter { index in
                 // Universal indexes (recordTypes == nil) apply to all types
                 if index.recordTypes == nil {
                     return true
                 }
-                // Check if this record type is in the index's record types
-                return index.recordTypes?.contains(recordName) ?? false
+                // Check if this item type is in the index's record types
+                return index.recordTypes?.contains(itemType) ?? false
             }
         }
     }
@@ -160,24 +193,36 @@ public final class IndexManager: Sendable {
     /// Enable an index (transition to WRITE_ONLY state)
     ///
     /// - Parameter indexName: Name of the index
+    /// - Throws: IndexManagerError.indexNotFound if index is not registered
     /// - Throws: IndexStateError.invalidTransition if not in DISABLED state
     public func enable(_ indexName: String) async throws {
+        guard index(named: indexName) != nil else {
+            throw IndexManagerError.indexNotFound(indexName)
+        }
         try await stateManager.enable(indexName)
     }
 
     /// Make an index readable (transition to READABLE state)
     ///
     /// - Parameter indexName: Name of the index
+    /// - Throws: IndexManagerError.indexNotFound if index is not registered
     /// - Throws: IndexStateError.invalidTransition if not in WRITE_ONLY state
     public func makeReadable(_ indexName: String) async throws {
+        guard index(named: indexName) != nil else {
+            throw IndexManagerError.indexNotFound(indexName)
+        }
         try await stateManager.makeReadable(indexName)
     }
 
     /// Disable an index (transition to DISABLED state)
     ///
     /// - Parameter indexName: Name of the index
+    /// - Throws: IndexManagerError.indexNotFound if index is not registered
     /// - Throws: Error if state write fails
     public func disable(_ indexName: String) async throws {
+        guard index(named: indexName) != nil else {
+            throw IndexManagerError.indexNotFound(indexName)
+        }
         try await stateManager.disable(indexName)
     }
 

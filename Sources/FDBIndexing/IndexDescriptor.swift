@@ -24,7 +24,7 @@ import Foundation
 /// let emailIndex = IndexDescriptor(
 ///     name: "User_email",
 ///     keyPaths: ["email"],
-///     kind: try! IndexKind(ScalarIndexKind()),
+///     kind: ScalarIndexKind(),
 ///     commonOptions: .init(unique: true)
 /// )
 ///
@@ -32,7 +32,7 @@ import Foundation
 /// let compositeIndex = IndexDescriptor(
 ///     name: "Product_category_price",
 ///     keyPaths: ["category", "price"],
-///     kind: try! IndexKind(ScalarIndexKind()),
+///     kind: ScalarIndexKind(),
 ///     commonOptions: .init()
 /// )
 ///
@@ -40,13 +40,11 @@ import Foundation
 /// let vectorIndex = IndexDescriptor(
 ///     name: "Product_embedding_hnsw",
 ///     keyPaths: ["embedding"],
-///     kind: try! IndexKind(
-///         VectorIndexKind(dimensions: 384, metric: .cosine)
-///     ),
+///     kind: VectorIndexKind(dimensions: 384, metric: .cosine),
 ///     commonOptions: .init()
 /// )
 /// ```
-public struct IndexDescriptor: Sendable, Codable, Hashable {
+public struct IndexDescriptor: Sendable {
     /// Index name (unique identifier)
     ///
     /// **Naming convention**: "{RecordType}_{field1}_{field2}_..."
@@ -73,7 +71,7 @@ public struct IndexDescriptor: Sendable, Codable, Hashable {
     /// These strings contain only field names, no type information.
     public let keyPaths: [String]
 
-    /// Index kind (type-erased wrapper)
+    /// Index kind
     ///
     /// **Kind examples**:
     /// - Scalar: Standard B-tree index
@@ -84,14 +82,12 @@ public struct IndexDescriptor: Sendable, Codable, Hashable {
     /// **Example**:
     /// ```swift
     /// // Built-in kind
-    /// let kind = try IndexKind(ScalarIndexKind())
+    /// let kind: any IndexKind = ScalarIndexKind()
     ///
     /// // Extended kind (with configuration)
-    /// let kind = try IndexKind(
-    ///     VectorIndexKind(dimensions: 768, metric: .cosine)
-    /// )
+    /// let kind: any IndexKind = VectorIndexKind(dimensions: 768, metric: .cosine)
     /// ```
-    public let kind: IndexKind
+    public let kind: any IndexKind
 
     /// Common options
     ///
@@ -122,7 +118,7 @@ public struct IndexDescriptor: Sendable, Codable, Hashable {
     /// let descriptor = IndexDescriptor(
     ///     name: "User_email",
     ///     keyPaths: ["email"],
-    ///     kind: try! IndexKind(ScalarIndexKind()),
+    ///     kind: ScalarIndexKind(),
     ///     commonOptions: .init(unique: true)
     /// )
     /// ```
@@ -130,12 +126,12 @@ public struct IndexDescriptor: Sendable, Codable, Hashable {
     /// - Parameters:
     ///   - name: Index name (unique identifier)
     ///   - keyPaths: Array of indexed field names
-    ///   - kind: Index kind (type-erased)
+    ///   - kind: Index kind
     ///   - commonOptions: Common options (default: empty)
     public init(
         name: String,
         keyPaths: [String],
-        kind: IndexKind,
+        kind: any IndexKind,
         commonOptions: CommonIndexOptions = .init()
     ) {
         self.name = name
@@ -186,7 +182,7 @@ extension IndexDescriptor {
     /// }
     /// ```
     public var kindIdentifier: String {
-        kind.identifier
+        type(of: kind).identifier
     }
 }
 
@@ -196,7 +192,7 @@ extension IndexDescriptor: CustomStringConvertible {
     public var description: String {
         var parts = [
             "IndexDescriptor(name: \(name)",
-            "kind: \(kind.identifier)",
+            "kind: \(type(of: kind).identifier)",
             "keyPaths: [\(keyPaths.joined(separator: ", "))]"
         ]
 

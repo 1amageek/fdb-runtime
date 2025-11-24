@@ -6,6 +6,7 @@
 // monotonically increasing unique values.
 
 import Foundation
+import FoundationDB
 
 /// VERSION (Optimistic Concurrency Control) index kind
 ///
@@ -58,7 +59,7 @@ import Foundation
 /// )
 /// // → Throws error if another transaction updated the record
 /// ```
-public struct VersionIndexKind: IndexKindProtocol {
+public struct VersionIndexKind: IndexKind {
     /// Kind identifier (built-in kinds use lowercase words)
     public static let identifier = "version"
 
@@ -93,16 +94,14 @@ public struct VersionIndexKind: IndexKindProtocol {
     /// ```
     ///
     /// - Parameter types: Array of field types (usually empty or 1)
-    /// - Throws: IndexTypeValidationError.invalidTypeCount
+    /// - Throws: IndexError.invalidConfiguration
     public static func validateTypes(_ types: [Any.Type]) throws {
         // Version index has only one field ("_version")
         // However, this field is not an actual record field,
         // but a special marker representing versionstamp
         guard types.count == 1 else {
-            throw IndexTypeValidationError.invalidTypeCount(
-                index: identifier,
-                expected: 1,
-                actual: types.count
+            throw IndexError.invalidConfiguration(
+                "Version index requires exactly 1 field, got \(types.count)"
             )
         }
 
@@ -117,4 +116,6 @@ public struct VersionIndexKind: IndexKindProtocol {
     /// let kind = try IndexKind(VersionIndexKind())
     /// ```
     public init() {}
+
+    /// Create index maintainer (placeholder - actual implementation in upper layers)
 }

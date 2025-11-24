@@ -52,7 +52,7 @@ FDBRuntime consists of **three modules** with clear responsibilities:
 │  Dependencies: Swift stdlib + Foundation                │
 │  Platform: iOS, macOS, Linux, tvOS, watchOS, visionOS   │
 │                                                          │
-│  ✅ IndexKindProtocol (protocol definition)             │
+│  ✅ IndexKind (protocol definition)             │
 │  ✅ Built-in IndexKinds (Scalar, Count, Sum, etc.)      │
 │  ✅ IndexDescriptor (metadata container)                │
 │  ✅ IndexAnnotatable (annotation protocol)              │
@@ -75,18 +75,18 @@ FDBRuntime consists of **three modules** with clear responsibilities:
              ▼
 ┌─────────────────────────────────────────────────────────┐
 │                   FDBRuntime                             │
-│  Role: Abstract runtime foundation (server-only)        │
+│  Role: Type-independent runtime foundation (server)     │
 │  Dependencies: FDBCore + FoundationDB                   │
 │  Platform: macOS, Linux (server-only)                   │
 │                                                          │
-│  ✅ FDBStore (type-independent, operates on items)      │
+│  ✅ FDBStore (operates on type-independent items)       │
 │  ✅ FDBContainer (container management)                 │
 │  ✅ FDBContext (change tracking, SwiftData-like API)    │
 │  ✅ IndexMaintainer protocol (index update interface)   │
-│  ✅ DataAccess protocol (data access interface)         │
+│  ✅ DataAccess protocol (item field access interface)   │
 │  ✅ IndexManager (index registration & management)      │
 └────────────┬────────────────────────────────────────────┘
-             │ Implementations in data model layers
+             │ Data model layers implement protocols
              ├─────────────────┬──────────────┬───────────┐
              │                 │              │           │
              ▼                 ▼              ▼           ▼
@@ -95,8 +95,8 @@ FDBRuntime consists of **three modules** with clear responsibilities:
 │                 │ │   -layer    │ │  -layer  │ │  -layer  │
 ├─────────────────┤ ├─────────────┤ ├──────────┤ ├──────────┤
 │ RecordStore     │ │DocumentStore│ │VectorStore││GraphStore│
-│ DataAccess      │ │DataAccess   │ │DataAccess│ │DataAccess│
-│ IndexMaintainer │ │Maintainer   │ │Maintainer│ │Maintainer│
+│ DataAccess impl │ │DataAccess   │ │DataAccess│ │DataAccess│
+│ IndexMaintainer │ │impl         │ │impl      │ │impl      │
 │ QueryPlanner    │ │QueryBuilder │ │NNSearch  │ │Traversal │
 │ Recordable      │ │Document     │ │Vector    │ │Node/Edge │
 └─────────────────┘ └─────────────┘ └──────────┘ └──────────┘
@@ -108,17 +108,38 @@ FDBRuntime consists of **three modules** with clear responsibilities:
 |--------|---------------|------------------|--------------|
 | **FDBIndexing** | Index metadata abstractions (protocols + built-ins) | All platforms | None |
 | **FDBCore** | FDB-independent core, model definitions | All platforms | FDBIndexing |
-| **FDBRuntime** | Abstract runtime protocols + shared implementations (operates on type-independent "items") | Server-only | FDBCore + FoundationDB |
+| **FDBRuntime** | Type-independent runtime protocols + shared storage layer | Server-only | FDBCore + FoundationDB |
 
 ---
 
 ## 🏗️ Architecture Principles
 
-### 1. **Shared FDBStore Across All Models**
+### 1. **Terminology: "Item" vs "Record"**
 
-Unlike traditional approaches where each data model has its own store (RecordStore, DocumentStore, etc.), **FDBRuntime uses a single FDBStore** that is shared across all data model layers:
+FDBRuntime uses precise terminology to clarify abstraction levels:
 
-> **Terminology Note**: FDBStore operates on **"items"** (type-independent data) internally, while upper layers (RecordStore, DocumentStore, etc.) work with typed **"records"** or **"documents"**. This distinction clarifies that FDBStore is a low-level storage abstraction operating on raw `Data`, not a type-safe layer.
+| Layer | Term | Meaning | Type |
+|-------|------|---------|------|
+| **FDBRuntime** | **item** | Type-independent data unit | `Data` (raw bytes) |
+| **Upper layers** | **record/document/vector** | Type-specific data unit | `Recordable`, `Document`, etc. |
+
+**FDBStore operates on items**:
+```swift
+// FDBStore API (type-independent)
+func save(data: Data, for itemType: String, primaryKey: Tuple, ...) async throws
+func load(for itemType: String, primaryKey: Tuple, ...) async throws -> Data?
+```
+
+**RecordStore wraps FDBStore with type safety**:
+```swift
+// RecordStore API (type-safe)
+func save(_ record: Record) async throws
+func load(primaryKey: Tuple) async throws -> Record?
+```
+
+### 2. **Shared FDBStore Across All Models**
+
+Unlike traditional approaches where each data model has its own store, **FDBRuntime uses a single FDBStore** that is shared across all data model layers:
 
 **Traditional (fragmented)**:
 ```swift
@@ -131,38 +152,52 @@ let vectorStore = VectorStore(...)
 
 **FDBRuntime (unified)**:
 ```swift
-// ✅ One FDBStore, multiple access patterns
+// ✅ One FDBStore, multiple typed wrappers
 let store = container.store(for: subspace)
 
-// Different data models use the same store (each implementing DataAccess protocol)
-let recordDataAccess = RecordDataAccess<User>(store: store, schema: schema)
-let docDataAccess = DocumentDataAccess(store: store)
-let vectorDataAccess = VectorDataAccess(store: store, dimensions: 768)
+// Each layer wraps FDBStore with its own DataAccess implementation
+let recordStore = RecordStore<User>(store: store, schema: schema)
+let docStore = DocumentStore(store: store)
+let vectorStore = VectorStore(store: store, dimensions: 768)
 ```
 
-### 2. **Protocol-Based Extensibility**
+### 3. **Protocol-Based Extensibility**
 
 FDBRuntime defines **protocols**, not concrete implementations:
 
+**DataAccess Protocol**:
 ```swift
 // Protocol definition (in FDBRuntime)
-public protocol IndexMaintainer: Sendable {
-    func updateIndex(...) async throws
-    func removeIndex(...) async throws
+public protocol DataAccess<Item>: Sendable {
+    associatedtype Item: Sendable
+    func itemType(for item: Item) -> String
+    func extractField(from item: Item, fieldName: String) throws -> [any TupleElement]
+    func serialize(_ item: Item) throws -> FDB.Bytes
+    func deserialize(_ bytes: FDB.Bytes) throws -> Item
 }
 
 // Implementations (in data model layers)
 // fdb-record-layer:
-struct RecordIndexMaintainer<Record>: IndexMaintainer { ... }
+struct RecordDataAccess<Record: Recordable>: DataAccess { ... }
 
 // fdb-document-layer:
-struct DocumentIndexMaintainer: IndexMaintainer { ... }
+struct DocumentDataAccess: DataAccess { ... }
+```
 
-// fdb-vector-layer:
+**IndexMaintainer Protocol**:
+```swift
+// Protocol definition (in FDBRuntime)
+public protocol IndexMaintainer<Record>: Sendable {
+    func updateIndex(oldRecord: Record?, newRecord: Record?, dataAccess: any DataAccess<Record>, ...) async throws
+    func scanRecord(_ record: Record, primaryKey: Tuple, dataAccess: any DataAccess<Record>, ...) async throws
+}
+
+// Implementations (in data model layers)
+struct ValueIndexMaintainer<Record>: IndexMaintainer { ... }
 struct VectorIndexMaintainer: IndexMaintainer { ... }
 ```
 
-### 3. **Platform Separation**
+### 4. **Platform Separation**
 
 ```
 Client (iOS/macOS)          Server (macOS/Linux)
@@ -263,24 +298,63 @@ import FDBRecordLayer  // Type-safe extensions
 @Recordable
 struct User {
     #PrimaryKey<User>([\.userID])
-    #Index<User>([\.email], type: ScalarIndexKind())  // ← From FDBIndexing
+    #Index<User>([\.email], type: ScalarIndexKind())
 
     var userID: Int64
     var email: String
     var name: String
 }
 
-// FDBStore is shared across all models
-// Note: FDBStore internally operates on "items" (type-independent Data),
-//       while RecordStore provides type-safe "record" operations
+// FDBStore operates on type-independent items (Data)
 let container = FDBContainer(database: database)
 let subspace = try await container.getOrOpenDirectory(path: ["users"])
 let store = container.store(for: subspace)
 
-// Use type-safe extensions (fdb-record-layer)
+// RecordStore provides type-safe wrapper
 let recordStore = RecordStore<User>(store: store, schema: schema)
 try await recordStore.save(user)
 ```
+
+---
+
+## ⚠️ Important Operational Considerations
+
+### Index Registration Persistence
+
+**Critical**: Index definitions are stored **in-memory only** and are **NOT persisted** to FoundationDB.
+
+**Implications**:
+- ✅ **Application Startup**: You **MUST** re-register all indexes on each process start
+- ✅ **Multiple Instances**: Each process instance must register the same set of indexes
+- ✅ **Schema Management**: Upper layers (fdb-record-layer) are responsible for persisting schema metadata
+
+**Bootstrap Pattern**:
+```swift
+// 1. Load schema from FDB (upper layer responsibility)
+let schema = try await loadPersistedSchema(from: database)
+
+// 2. Register all indexes from schema on EVERY startup
+let indexManager = IndexManager(database: database, subspace: indexSubspace)
+for indexDescriptor in schema.indexes {
+    let index = try Index(from: indexDescriptor, recordType: recordType)
+    try indexManager.register(index: index)
+}
+
+// 3. Now ready for operations
+let state = try await indexManager.state(of: "user_by_email")
+```
+
+**Multi-Process Coordination**:
+- All processes **must** register identical index sets
+- Index state (DISABLED/WRITE_ONLY/READABLE) **is** persisted in FDB
+- Schema versioning should be handled by upper layers
+
+**Why This Design?**:
+- ✅ Separation of concerns: FDBRuntime handles runtime, upper layers handle schema persistence
+- ✅ Flexibility: Different deployment strategies for schema management
+- ✅ Performance: No schema lookup overhead on every operation
+
+See `IndexManager` documentation in `Sources/FDBRuntime/IndexManager.swift` for details.
 
 ---
 
@@ -298,12 +372,12 @@ FDBIndexing module provides **protocol-based extensible index system** with 7 bu
 | **VersionIndexKind** | `"version"` | Optimistic concurrency control | O(1) |
 | **VectorIndexKind** | `"vector"` | Vector search (HNSW/IVF/Flat) | O(log n) / O(n) |
 
-### IndexKindProtocol Design
+### IndexKind Design
 
-All index kinds implement `IndexKindProtocol`, enabling type-safe extensibility:
+All index kinds implement `IndexKind`, enabling type-safe extensibility:
 
 ```swift
-public protocol IndexKindProtocol: Sendable, Codable, Hashable {
+public protocol IndexKind: Sendable, Codable, Hashable {
     static var identifier: String { get }
     static var subspaceStructure: SubspaceStructure { get }
     static func validateTypes(_ types: [Any.Type]) throws
@@ -369,48 +443,9 @@ struct Product {
         )
     )
 
-    // IVF (medium datasets 1K-10K)
-    #Index<Product>(
-        [\.embedding],
-        type: VectorIndexKind(
-            dimensions: 384,
-            metric: .l2,
-            algorithm: .ivf(IVFParameters(
-                nClusters: 100,
-                nProbe: 10
-            ))
-        )
-    )
-
     var productID: Int64
     var name: String
     var embedding: [Float32]
-}
-```
-
-**IndexKind Storage**:
-```swift
-// All IndexKind configurations are stored as JSON
-let vectorKind = try IndexKind(
-    VectorIndexKind(
-        dimensions: 384,
-        metric: .cosine,
-        algorithm: .hnsw(HNSWParameters.default)
-    )
-)
-
-// Type-safe decoding
-let vector = try vectorKind.decode(VectorIndexKind.self)
-print(vector.dimensions)  // 384
-print(vector.metric)       // .cosine
-
-switch vector.algorithm {
-case .hnsw(let params):
-    print("HNSW: m=\(params.m), efConstruction=\(params.efConstruction)")
-case .flatScan:
-    print("Flat scan")
-case .ivf(let params):
-    print("IVF: nClusters=\(params.nClusters)")
 }
 ```
 
@@ -421,7 +456,7 @@ Extend FDBRuntime with your own IndexKind:
 ```swift
 import FDBIndexing
 
-public struct BloomFilterIndexKind: IndexKindProtocol {
+public struct BloomFilterIndexKind: IndexKind {
     public static var identifier: String { "bloom_filter" }
     public var falsePositiveRate: Double
 
@@ -477,24 +512,20 @@ import FDBVectorLayer
 
 let container = FDBContainer(database: database)
 
-// Structured records
+// All layers share the same FDBStore infrastructure
 let userStore = try await RecordStore<User>(
     store: container.store(for: "users"),
     schema: userSchema
 )
 
-// Flexible documents
 let eventStore = try await DocumentStore(
     store: container.store(for: "events")
 )
 
-// Vector embeddings
 let embeddingStore = try await VectorStore(
     store: container.store(for: "embeddings"),
     dimensions: 768
 )
-
-// All share the same FDBStore infrastructure
 ```
 
 ---
@@ -524,7 +555,7 @@ let embeddingStore = try await VectorStore(
 
 ### 3. **Protocol-Based Architecture**
 
-**Decision**: FDBRuntime provides protocols, not concrete implementations
+**Decision**: FDBRuntime provides protocols (DataAccess, IndexMaintainer), not concrete implementations
 
 **Benefits**:
 - Each data model layer can optimize for its use case
@@ -532,11 +563,21 @@ let embeddingStore = try await VectorStore(
 - Easy to add new data models
 - Compile-time type safety
 
+### 4. **Terminology Precision**
+
+**Decision**: Use "item" in FDBRuntime, "record/document/vector" in upper layers
+
+**Benefits**:
+- Clarifies type-independent vs type-dependent layers
+- Reduces confusion about abstraction levels
+- Consistent with other storage systems terminology
+
 ---
 
 ## 📚 Documentation
 
 - **[Architecture Guide](docs/architecture.md)** - Detailed design decisions
+- **[Layer Implementation Guide](docs/LAYER_IMPLEMENTATION_GUIDE.md)** - Complete guide to building custom data model layers (日本語)
 - **[FDBCore API Reference](docs/fdbcore-api.md)** - Client-side API
 - **[FDBRuntime API Reference](docs/fdbruntime-api.md)** - Server-side protocols
 - **[Built-in IndexKinds](docs/builtin-indexes.md)** - Index type reference

@@ -1,5 +1,6 @@
 import Foundation
 import FoundationDB
+import FDBIndexing
 import Logging
 
 /// FDBStore - Type-independent generic data store
@@ -107,7 +108,7 @@ public final class FDBStore: Sendable {
     ) throws {
         let effectiveSubspace = itemSubspace.subspace(itemType)
         let keyTuple = (primaryKey as? Tuple) ?? Tuple([primaryKey])
-        let key = effectiveSubspace.subspace(keyTuple).pack(Tuple())
+        let key = effectiveSubspace.pack(keyTuple)
 
         transaction.setValue(Array(data), for: key)
     }
@@ -149,7 +150,7 @@ public final class FDBStore: Sendable {
     ) async throws -> Data? {
         let effectiveSubspace = itemSubspace.subspace(itemType)
         let keyTuple = (primaryKey as? Tuple) ?? Tuple([primaryKey])
-        let key = effectiveSubspace.subspace(keyTuple).pack(Tuple())
+        let key = effectiveSubspace.pack(keyTuple)
 
         if let bytes = try await transaction.getValue(for: key, snapshot: false) {
             return Data(bytes)
@@ -191,7 +192,7 @@ public final class FDBStore: Sendable {
     ) throws {
         let effectiveSubspace = itemSubspace.subspace(itemType)
         let keyTuple = (primaryKey as? Tuple) ?? Tuple([primaryKey])
-        let key = effectiveSubspace.subspace(keyTuple).pack(Tuple())
+        let key = effectiveSubspace.pack(keyTuple)
 
         transaction.clear(key: key)
     }
@@ -249,10 +250,10 @@ public final class FDBStore: Sendable {
                     for try await (key, value) in transaction.getRange(
                         beginSelector: .firstGreaterOrEqual(begin),
                         endSelector: .firstGreaterOrEqual(end),
-                        snapshot: false
+                        snapshot: true
                     ) {
                         // Extract primary key from key
-                        // Key format: [itemSubspace]/[itemType]/[primaryKey]/[]
+                        // Key format: [itemSubspace]/[itemType]/[primaryKey]
                         // We need to unpack the primaryKey portion
                         guard let unpacked = try? effectiveSubspace.unpack(key) else {
                             continue

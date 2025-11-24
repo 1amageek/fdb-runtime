@@ -1,6 +1,5 @@
 import Foundation
 import FoundationDB
-import FDBIndexing
 
 /// Protocol for accessing data item metadata and fields
 ///
@@ -28,9 +27,9 @@ import FDBIndexing
 ///
 /// **For Record layer (fdb-record-layer)**:
 /// ```swift
-/// struct GenericDataAccess<Record: Recordable>: DataAccess {
+/// struct GenericDataAccess<Record: Persistable>: DataAccess {
 ///     func itemType(for item: Record) -> String {
-///         return Record.recordName
+///         return Record.persistableType
 ///     }
 ///
 ///     func extractField(from item: Record, fieldName: String) throws -> [any TupleElement] {
@@ -371,16 +370,3 @@ public enum DataAccessError: Error {
     case fieldNotFound(itemType: String, fieldName: String)
     case typeMismatch(itemType: String, fieldName: String, expected: String, actual: String)
 }
-
-// MARK: - Backward Compatibility
-
-/// Backward compatibility typealias
-///
-/// This allows existing code using RecordAccess to continue working
-/// while we transition to the more generic DataAccess terminology.
-@available(*, deprecated, renamed: "DataAccess")
-public typealias RecordAccess<Record> = DataAccess<Record> where Record: Sendable
-
-/// Backward compatibility typealias for errors
-@available(*, deprecated, renamed: "DataAccessError")
-public typealias RecordAccessError = DataAccessError

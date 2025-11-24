@@ -1,5 +1,4 @@
 import Foundation
-import FDBIndexing
 
 /// Index definition
 ///
@@ -14,8 +13,8 @@ public struct Index: Sendable {
     /// Unique index name
     public let name: String
 
-    /// Index type (from fdb-indexing)
-    public let type: any IndexKindProtocol
+    /// Index kind (metadata only - no execution logic)
+    public let kind: any IndexKind
 
     /// Root expression defining indexed fields
     public let rootExpression: KeyExpression
@@ -32,19 +31,19 @@ public struct Index: Sendable {
     ///
     /// - Parameters:
     ///   - name: Unique index name
-    ///   - type: Index type from fdb-indexing
+    ///   - kind: Index kind (any IndexKind protocol implementation)
     ///   - rootExpression: Expression defining indexed fields
     ///   - subspaceKey: Optional subspace key (defaults to name)
     ///   - recordTypes: Optional set of record type names this index applies to
     public init(
         name: String,
-        type: any IndexKindProtocol,
+        kind: any IndexKind,
         rootExpression: KeyExpression,
         subspaceKey: String? = nil,
         recordTypes: Set<String>? = nil
     ) {
         self.name = name
-        self.type = type
+        self.kind = kind
         self.rootExpression = rootExpression
         self.subspaceKey = subspaceKey ?? name
         self.recordTypes = recordTypes

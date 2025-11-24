@@ -1,5 +1,5 @@
 // IndexDescriptorTests.swift
-// FDBIndexing Tests - IndexDescriptor のテスト
+// FDBIndexing Tests - IndexDescriptor tests
 
 import Testing
 import Foundation
@@ -12,7 +12,7 @@ struct IndexDescriptorTests {
 
     @Test("IndexDescriptor initializes with all parameters")
     func testInitialization() throws {
-        let kind = try IndexKind(ScalarIndexKind())
+        let kind = ScalarIndexKind()
         let options = CommonIndexOptions(unique: true, sparse: false, metadata: ["key": "value"])
 
         let descriptor = IndexDescriptor(
@@ -24,7 +24,7 @@ struct IndexDescriptorTests {
 
         #expect(descriptor.name == "User_email")
         #expect(descriptor.keyPaths == ["email"])
-        #expect(descriptor.kind.identifier == "scalar")
+        #expect(type(of: descriptor.kind).identifier == "scalar")
         #expect(descriptor.commonOptions.unique == true)
         #expect(descriptor.commonOptions.sparse == false)
         #expect(descriptor.commonOptions.metadata == ["key": "value"])
@@ -32,7 +32,7 @@ struct IndexDescriptorTests {
 
     @Test("IndexDescriptor initializes with default options")
     func testInitializationWithDefaults() throws {
-        let kind = try IndexKind(ScalarIndexKind())
+        let kind = ScalarIndexKind()
 
         let descriptor = IndexDescriptor(
             name: "User_email",
@@ -51,7 +51,7 @@ struct IndexDescriptorTests {
 
     @Test("IndexDescriptor isUnique property")
     func testIsUniqueProperty() throws {
-        let kind = try IndexKind(ScalarIndexKind())
+        let kind = ScalarIndexKind()
 
         let uniqueDescriptor = IndexDescriptor(
             name: "User_email",
@@ -72,7 +72,7 @@ struct IndexDescriptorTests {
 
     @Test("IndexDescriptor isSparse property")
     func testIsSparseProperty() throws {
-        let kind = try IndexKind(ScalarIndexKind())
+        let kind = ScalarIndexKind()
 
         let sparseDescriptor = IndexDescriptor(
             name: "User_nickname",
@@ -93,8 +93,8 @@ struct IndexDescriptorTests {
 
     @Test("IndexDescriptor kindIdentifier property")
     func testKindIdentifierProperty() throws {
-        let scalarKind = try IndexKind(ScalarIndexKind())
-        let countKind = try IndexKind(CountIndexKind())
+        let scalarKind = ScalarIndexKind()
+        let countKind = CountIndexKind()
 
         let scalarDescriptor = IndexDescriptor(
             name: "User_email",
@@ -115,7 +115,7 @@ struct IndexDescriptorTests {
 
     @Test("IndexDescriptor with composite key paths")
     func testCompositeKeyPaths() throws {
-        let kind = try IndexKind(ScalarIndexKind())
+        let kind = ScalarIndexKind()
 
         let descriptor = IndexDescriptor(
             name: "Product_category_price",
@@ -131,7 +131,7 @@ struct IndexDescriptorTests {
 
     @Test("IndexDescriptor with CountIndexKind")
     func testCountIndexKind() throws {
-        let kind = try IndexKind(CountIndexKind())
+        let kind = CountIndexKind()
 
         let descriptor = IndexDescriptor(
             name: "User_count_by_city",
@@ -144,7 +144,7 @@ struct IndexDescriptorTests {
 
     @Test("IndexDescriptor with SumIndexKind")
     func testSumIndexKind() throws {
-        let kind = try IndexKind(SumIndexKind())
+        let kind = SumIndexKind()
 
         let descriptor = IndexDescriptor(
             name: "Employee_salary_by_dept",
@@ -158,7 +158,7 @@ struct IndexDescriptorTests {
 
     @Test("IndexDescriptor with MinIndexKind")
     func testMinIndexKind() throws {
-        let kind = try IndexKind(MinIndexKind())
+        let kind = MinIndexKind()
 
         let descriptor = IndexDescriptor(
             name: "Product_min_price_by_region",
@@ -171,7 +171,7 @@ struct IndexDescriptorTests {
 
     @Test("IndexDescriptor with MaxIndexKind")
     func testMaxIndexKind() throws {
-        let kind = try IndexKind(MaxIndexKind())
+        let kind = MaxIndexKind()
 
         let descriptor = IndexDescriptor(
             name: "Product_max_price_by_region",
@@ -184,7 +184,7 @@ struct IndexDescriptorTests {
 
     @Test("IndexDescriptor with VersionIndexKind")
     func testVersionIndexKind() throws {
-        let kind = try IndexKind(VersionIndexKind())
+        let kind = VersionIndexKind()
 
         let descriptor = IndexDescriptor(
             name: "Document_version_index",
@@ -197,100 +197,19 @@ struct IndexDescriptorTests {
 
     // MARK: - Codable Tests
 
-    @Test("IndexDescriptor is Codable")
-    func testCodable() throws {
-        let kind = try IndexKind(ScalarIndexKind())
-        let descriptor = IndexDescriptor(
-            name: "User_email",
-            keyPaths: ["email"],
-            kind: kind,
-            commonOptions: .init(unique: true, metadata: ["category": "user"])
-        )
-
-        // JSON エンコード
-        let encoder = JSONEncoder()
-        let data = try encoder.encode(descriptor)
-
-        // JSON デコード
-        let decoder = JSONDecoder()
-        let decoded = try decoder.decode(IndexDescriptor.self, from: data)
-
-        #expect(decoded.name == descriptor.name)
-        #expect(decoded.keyPaths == descriptor.keyPaths)
-        #expect(decoded.kindIdentifier == descriptor.kindIdentifier)
-        #expect(decoded.isUnique == descriptor.isUnique)
-        #expect(decoded.commonOptions.metadata == descriptor.commonOptions.metadata)
-    }
-
-    @Test("IndexDescriptor array is Codable")
-    func testArrayCodable() throws {
-        let descriptors = [
-            IndexDescriptor(
-                name: "User_email",
-                keyPaths: ["email"],
-                kind: try IndexKind(ScalarIndexKind()),
-                commonOptions: .init(unique: true)
-            ),
-            IndexDescriptor(
-                name: "User_count_by_city",
-                keyPaths: ["city"],
-                kind: try IndexKind(CountIndexKind())
-            )
-        ]
-
-        // JSON エンコード
-        let encoder = JSONEncoder()
-        let data = try encoder.encode(descriptors)
-
-        // JSON デコード
-        let decoder = JSONDecoder()
-        let decoded = try decoder.decode([IndexDescriptor].self, from: data)
-
-        #expect(decoded.count == 2)
-        #expect(decoded[0].name == "User_email")
-        #expect(decoded[1].name == "User_count_by_city")
-    }
-
-    // MARK: - Hashable Tests
-
-    @Test("IndexDescriptor is Hashable")
-    func testHashable() throws {
-        let kind1 = try IndexKind(ScalarIndexKind())
-        let kind2 = try IndexKind(ScalarIndexKind())
-
-        let descriptor1 = IndexDescriptor(
-            name: "User_email",
-            keyPaths: ["email"],
-            kind: kind1,
-            commonOptions: .init(unique: true)
-        )
-
-        let descriptor2 = IndexDescriptor(
-            name: "User_email",
-            keyPaths: ["email"],
-            kind: kind2,
-            commonOptions: .init(unique: true)
-        )
-
-        let descriptor3 = IndexDescriptor(
-            name: "User_city",
-            keyPaths: ["city"],
-            kind: kind1
-        )
-
-        #expect(descriptor1 == descriptor2)
-        #expect(descriptor1 != descriptor3)
-
-        // Set に格納可能
-        let set: Set<IndexDescriptor> = [descriptor1, descriptor2, descriptor3]
-        #expect(set.count == 2)  // descriptor1 と descriptor2 は同じ
-    }
+    // Note: Codable tests removed because IndexDescriptor contains 'any IndexKind'
+    // which cannot be made Codable without type erasure. We removed the type-erased
+    // wrapper (AnyIndexKind) in favor of simpler design using 'any IndexKind' directly.
 
     // MARK: - Description Tests
 
+    // Note: Hashable/Equatable tests removed because IndexDescriptor contains
+    // 'any IndexKind' which is not directly comparable. Equality would require
+    // type erasure which we removed in favor of simpler design.
+
     @Test("IndexDescriptor description includes key information")
     func testDescription() throws {
-        let kind = try IndexKind(ScalarIndexKind())
+        let kind = ScalarIndexKind()
         let descriptor = IndexDescriptor(
             name: "User_email",
             keyPaths: ["email"],

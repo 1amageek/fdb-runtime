@@ -1,18 +1,19 @@
 import Foundation
 import FDBIndexing
 
-/// @Model macro declaration
+/// @Persistable macro declaration
 ///
-/// Generates Model protocol conformance with metadata methods.
+/// Generates Persistable protocol conformance with metadata methods.
 ///
-/// **Supports all layers**:
+/// **Supports all data model layers**:
 /// - RecordLayer (RDB): Use #PrimaryKey for relational model
 /// - DocumentLayer (DocumentDB): No #PrimaryKey, auto-generates ObjectID
-/// - GraphLayer (GraphDB): Define nodes with relationships
+/// - VectorLayer (Vector search): Use #Index with VectorIndexKind
+/// - GraphLayer (GraphDB): Define nodes and edges with relationships
 ///
 /// **Usage**:
 /// ```swift
-/// @Model
+/// @Persistable
 /// struct User {
 ///     #PrimaryKey<User>([\.userID])
 ///     #Index<User>([\.email], type: ScalarIndexKind(), unique: true)
@@ -24,7 +25,7 @@ import FDBIndexing
 /// ```
 ///
 /// **Generated code**:
-/// - static var modelName: String
+/// - static var persistableType: String
 /// - static var allFields: [String]
 /// - static var indexDescriptors: [IndexDescriptor]
 /// - static var primaryKeyFields: [String] (if #PrimaryKey exists)
@@ -32,20 +33,14 @@ import FDBIndexing
 /// - static func enumMetadata(for fieldName: String) -> EnumMetadata?
 ///
 /// **Note**: primaryKeyFields is only generated if #PrimaryKey is declared.
-/// The Model protocol itself does not require primaryKeyFields (layer-independent).
-@attached(member, names: named(modelName), named(primaryKeyFields), named(allFields), named(indexDescriptors), named(fieldNumber), named(enumMetadata))
-@attached(extension, conformances: Model, Codable, Sendable)
-public macro Model() = #externalMacro(module: "FDBCoreMacros", type: "ModelMacro")
-
-/// @Recordable macro (backward compatibility)
-@available(*, deprecated, renamed: "Model")
-@attached(member, names: named(modelName), named(primaryKeyFields), named(allFields), named(indexDescriptors), named(fieldNumber), named(enumMetadata))
-@attached(extension, conformances: Model, Codable, Sendable)
-public macro Recordable() = #externalMacro(module: "FDBCoreMacros", type: "ModelMacro")
+/// The Persistable protocol itself does not require primaryKeyFields (layer-independent).
+@attached(member, names: named(persistableType), named(primaryKeyFields), named(allFields), named(indexDescriptors), named(fieldNumber), named(enumMetadata))
+@attached(extension, conformances: Persistable, Codable, Sendable)
+public macro Persistable() = #externalMacro(module: "FDBCoreMacros", type: "PersistableMacro")
 
 /// #PrimaryKey macro declaration
 ///
-/// Declares primary key fields for a record.
+/// Declares primary key fields for a persistable type.
 ///
 /// **Usage**:
 /// ```swift
@@ -53,8 +48,14 @@ public macro Recordable() = #externalMacro(module: "FDBCoreMacros", type: "Model
 /// #PrimaryKey<User>([\.country, \.userID])  // Composite key
 /// ```
 ///
-/// This is a marker macro. The @Recordable macro reads the #PrimaryKey declaration
+/// This is a marker macro. The @Persistable macro reads the #PrimaryKey declaration
 /// and generates the primaryKeyFields property.
+///
+/// **Layer-specific behavior**:
+/// - RecordLayer: Primary key is required
+/// - DocumentLayer: Primary key is optional (auto-generates ObjectID if not specified)
+/// - VectorLayer: Primary key typically required for vector lookups
+/// - GraphLayer: Nodes and edges have separate primary keys
 @freestanding(declaration)
 public macro PrimaryKey<T>(_ keyPaths: [PartialKeyPath<T>]) = #externalMacro(module: "FDBCoreMacros", type: "PrimaryKeyMacro")
 
@@ -64,30 +65,48 @@ public macro PrimaryKey<T>(_ keyPaths: [PartialKeyPath<T>]) = #externalMacro(mod
 ///
 /// **Usage**:
 /// ```swift
-/// #Index<User>([\.email], type: ScalarIndexKind(), unique: true)
-/// #Index<User>([\.country, \.city], type: ScalarIndexKind())
-/// #Index<User>([\.embedding], type: VectorIndexKind(dimensions: 384))
+/// // Import specific IndexKind from fdb-indexes package
+/// import ScalarIndexLayer
+/// import VectorIndexLayer
+///
+/// @Persistable
+/// struct Product {
+///     var id: Int64
+///
+///     #Index<Product>([\.email], type: ScalarIndexKind(), unique: true)
+///     #Index<Product>([\.embedding], type: VectorIndexKind(dimensions: 384))
+///
+///     var email: String
+///     var embedding: [Float32]
+/// }
 /// ```
 ///
-/// This is a marker macro. The @Recordable macro reads the #Index declaration
+/// This is a marker macro. The @Persistable macro reads the #Index declaration
 /// and generates the indexDescriptors array.
 ///
 /// **Parameters**:
 /// - keyPaths: Array of KeyPaths to indexed fields
-/// - type: IndexKind implementation (default: ScalarIndexKind())
+/// - type: IndexKind implementation (must import from fdb-indexes package)
 /// - unique: Uniqueness constraint (default: false)
 /// - name: Custom index name (default: auto-generated from field names)
+///
+/// **Index Types** (from fdb-indexes package):
+/// - ScalarIndexKind: VALUE index for sorting and range queries
+/// - VectorIndexKind: Vector similarity search (HNSW, IVF, flat scan)
+/// - FullTextIndexKind: Full-text search with inverted index
+/// - CountIndexKind, SumIndexKind, MinIndexKind, MaxIndexKind: Aggregation indexes
+/// - GeohashIndexKind: Geospatial indexing (third-party example)
 @freestanding(declaration)
-public macro Index<T>(
+public macro Index<T: Persistable>(
     _ keyPaths: [PartialKeyPath<T>],
-    type: any IndexKindProtocol = ScalarIndexKind(),
+    type: any IndexKind,
     unique: Bool = false,
     name: String? = nil
 ) = #externalMacro(module: "FDBCoreMacros", type: "IndexMacro")
 
 /// #Directory macro declaration
 ///
-/// Declares directory path for a record type (for FDBRuntime).
+/// Declares directory path for a persistable type (for FDBRuntime).
 ///
 /// **Usage**:
 /// ```swift

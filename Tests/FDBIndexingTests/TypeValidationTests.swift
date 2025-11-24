@@ -1,5 +1,5 @@
 // TypeValidationTests.swift
-// FDBIndexing Tests - TypeValidation ヘルパー関数のテスト
+// FDBIndexing Tests - TypeValidation helper function tests
 
 import Testing
 import Foundation
@@ -85,12 +85,12 @@ struct TypeValidationTests {
 
     @Test("TypeValidation.isComparable detects Comparable types")
     func testIsComparable() {
-        // 数値型
+        // Numeric types
         #expect(TypeValidation.isComparable(Int.self))
         #expect(TypeValidation.isComparable(Int64.self))
         #expect(TypeValidation.isComparable(Double.self))
 
-        // 文字列
+        // String
         #expect(TypeValidation.isComparable(String.self))
 
         // Date, UUID
@@ -100,11 +100,11 @@ struct TypeValidationTests {
 
     @Test("TypeValidation.isComparable rejects non-Comparable types")
     func testIsComparableRejects() {
-        // 配列型（要素がComparableでも配列自体はComparableでない）
+        // Array types (even if elements are Comparable, the array itself is not Comparable)
         #expect(!TypeValidation.isComparable([Int].self))
         #expect(!TypeValidation.isComparable([String].self))
 
-        // Optional型（ComparableでないOptionalもある）
+        // Optional types (some Optionals are not Comparable)
         #expect(!TypeValidation.isComparable(Int?.self))
     }
 
@@ -116,7 +116,7 @@ struct TypeValidationTests {
         #expect(TypeValidation.isArrayType([String].self))
         #expect(TypeValidation.isArrayType([Double].self))
         #expect(TypeValidation.isArrayType([Float32].self))
-        #expect(TypeValidation.isArrayType([[Int]].self))  // ネストされた配列
+        #expect(TypeValidation.isArrayType([[Int]].self))  // Nested array
     }
 
     @Test("TypeValidation.isArrayType rejects non-array types")
@@ -131,28 +131,28 @@ struct TypeValidationTests {
 
     @Test("TypeValidation methods can be combined for complex checks")
     func testCombinedUsage() {
-        // Int64: 数値 && 整数 && Comparable
+        // Int64: numeric && integer && Comparable
         #expect(TypeValidation.isNumeric(Int64.self))
         #expect(TypeValidation.isInteger(Int64.self))
         #expect(TypeValidation.isComparable(Int64.self))
         #expect(!TypeValidation.isFloatingPoint(Int64.self))
         #expect(!TypeValidation.isArrayType(Int64.self))
 
-        // Double: 数値 && 浮動小数点 && Comparable
+        // Double: numeric && floating point && Comparable
         #expect(TypeValidation.isNumeric(Double.self))
         #expect(TypeValidation.isFloatingPoint(Double.self))
         #expect(TypeValidation.isComparable(Double.self))
         #expect(!TypeValidation.isInteger(Double.self))
         #expect(!TypeValidation.isArrayType(Double.self))
 
-        // String: Comparable のみ
+        // String: Comparable only
         #expect(TypeValidation.isComparable(String.self))
         #expect(!TypeValidation.isNumeric(String.self))
         #expect(!TypeValidation.isInteger(String.self))
         #expect(!TypeValidation.isFloatingPoint(String.self))
         #expect(!TypeValidation.isArrayType(String.self))
 
-        // [Float32]: 配列のみ
+        // [Float32]: array only
         #expect(TypeValidation.isArrayType([Float32].self))
         #expect(!TypeValidation.isNumeric([Float32].self))
         #expect(!TypeValidation.isComparable([Float32].self))

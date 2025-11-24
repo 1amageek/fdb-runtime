@@ -1,5 +1,5 @@
 // VersionIndexKindTests.swift
-// FDBIndexing Tests - VersionIndexKind のテスト
+// FDBIndexing Tests - VersionIndexKind tests
 
 import Testing
 import Foundation
@@ -24,7 +24,7 @@ struct VersionIndexKindTests {
 
     @Test("VersionIndexKind validates single field")
     func testValidateSingleField() throws {
-        // 任意の型（実際には使用されない）
+        // Any type (not actually used)
         try VersionIndexKind.validateTypes([Int.self])
         try VersionIndexKind.validateTypes([String.self])
         try VersionIndexKind.validateTypes([Double.self])
@@ -32,14 +32,14 @@ struct VersionIndexKindTests {
 
     @Test("VersionIndexKind rejects multiple fields")
     func testRejectMultipleFields() {
-        #expect(throws: IndexTypeValidationError.self) {
+        #expect(throws: IndexError.self) {
             try VersionIndexKind.validateTypes([Int.self, String.self])
         }
     }
 
     @Test("VersionIndexKind rejects empty fields")
     func testRejectEmptyFields() {
-        #expect(throws: IndexTypeValidationError.self) {
+        #expect(throws: IndexError.self) {
             try VersionIndexKind.validateTypes([])
         }
     }
@@ -50,11 +50,11 @@ struct VersionIndexKindTests {
     func testCodable() throws {
         let kind = VersionIndexKind()
 
-        // JSON エンコード
+        // JSON encoding
         let encoder = JSONEncoder()
         let data = try encoder.encode(kind)
 
-        // JSON デコード
+        // JSON decoding
         let decoder = JSONDecoder()
         let decoded = try decoder.decode(VersionIndexKind.self, from: data)
 

@@ -4,9 +4,9 @@ import SwiftSyntaxBuilder
 import SwiftSyntaxMacros
 import SwiftDiagnostics
 
-/// @Model macro implementation
+/// @Persistable macro implementation
 ///
-/// Generates Model protocol conformance with metadata methods.
+/// Generates Persistable protocol conformance with metadata methods.
 ///
 /// **Supports all layers**:
 /// - RecordLayer (RDB): Use #PrimaryKey for relational model
@@ -14,7 +14,7 @@ import SwiftDiagnostics
 /// - GraphLayer (GraphDB): Define nodes with relationships
 ///
 /// **Generated code includes**:
-/// - static var modelName: String
+/// - static var persistableType: String
 /// - static var allFields: [String]
 /// - static var indexDescriptors: [IndexDescriptor]
 /// - static var primaryKeyFields: [String] (if #PrimaryKey exists)
@@ -22,11 +22,11 @@ import SwiftDiagnostics
 /// - static func enumMetadata(for fieldName: String) -> EnumMetadata?
 ///
 /// **Note**: primaryKeyFields is only generated if #PrimaryKey is declared.
-/// The Model protocol itself does not require primaryKeyFields (layer-independent).
+/// The Persistable protocol itself does not require primaryKeyFields (layer-independent).
 ///
 /// **Usage**:
 /// ```swift
-/// @Model
+/// @Persistable
 /// struct User {
 ///     #PrimaryKey<User>([\.userID])
 ///     #Index<User>([\.email], type: ScalarIndexKind(), unique: true)
@@ -36,7 +36,7 @@ import SwiftDiagnostics
 ///     var name: String
 /// }
 /// ```
-public struct ModelMacro: MemberMacro, ExtensionMacro {
+public struct PersistableMacro: MemberMacro, ExtensionMacro {
     public static func expansion(
         of node: AttributeSyntax,
         providingMembersOf declaration: some DeclGroupSyntax,
@@ -47,12 +47,12 @@ public struct ModelMacro: MemberMacro, ExtensionMacro {
             throw DiagnosticsError(diagnostics: [
                 Diagnostic(
                     node: Syntax(node),
-                    message: MacroExpansionErrorMessage("@Model can only be applied to structs")
+                    message: MacroExpansionErrorMessage("@Persistable can only be applied to structs")
                 )
             ])
         }
 
-        let modelName = structDecl.name.text
+        let typeName = structDecl.name.text
 
         // Extract all stored properties (fields)
         var allFields: [String] = []
@@ -140,7 +140,7 @@ public struct ModelMacro: MemberMacro, ExtensionMacro {
                 guard !keyPaths.isEmpty else { continue }
 
                 // Generate index name if not provided
-                let finalIndexName = indexName ?? "\(modelName)_\(keyPaths.joined(separator: "_"))"
+                let finalIndexName = indexName ?? "\(typeName)_\(keyPaths.joined(separator: "_"))"
 
                 // Generate IndexDescriptor initialization
                 let keyPathsArray = "[\(keyPaths.map { "\"\($0)\"" }.joined(separator: ", "))]"
@@ -151,7 +151,7 @@ public struct ModelMacro: MemberMacro, ExtensionMacro {
                     IndexDescriptor(
                         name: "\(finalIndexName)",
                         keyPaths: \(keyPathsArray),
-                        kind: try! IndexKind(\(kindInit)),
+                        kind: \(kindInit),
                         commonOptions: \(optionsInit)
                     )
                 """
@@ -160,15 +160,15 @@ public struct ModelMacro: MemberMacro, ExtensionMacro {
             }
         }
 
-        // Generate modelName property
-        let modelNameDecl: DeclSyntax = """
-            public static var modelName: String { "\(raw: modelName)" }
+        // Generate persistableType property
+        let persistableTypeDecl: DeclSyntax = """
+            public static var persistableType: String { "\(raw: typeName)" }
             """
 
         // Generate primaryKeyFields property (only if #PrimaryKey exists)
         // Note: This is generated as a member (not an extension) for compatibility
-        // with the macro system, but Model protocol itself does not require it.
-        var decls: [DeclSyntax] = [modelNameDecl]
+        // with the macro system, but Persistable protocol itself does not require it.
+        var decls: [DeclSyntax] = [persistableTypeDecl]
 
         if !primaryKeyFields.isEmpty {
             let primaryKeyFieldsArray = "[\(primaryKeyFields.map { "\"\($0)\"" }.joined(separator: ", "))]"
@@ -232,9 +232,9 @@ public struct ModelMacro: MemberMacro, ExtensionMacro {
         conformingTo protocols: [TypeSyntax],
         in context: some MacroExpansionContext
     ) throws -> [ExtensionDeclSyntax] {
-        // Generate conformance extension (Model, Codable, Sendable)
+        // Generate conformance extension (Persistable, Codable, Sendable)
         let conformanceExt: DeclSyntax = """
-            extension \(type.trimmed): Model, Codable, Sendable {}
+            extension \(type.trimmed): Persistable, Codable, Sendable {}
             """
 
         if let extensionDecl = conformanceExt.as(ExtensionDeclSyntax.self) {
@@ -254,7 +254,7 @@ public struct ModelMacro: MemberMacro, ExtensionMacro {
 /// ```
 ///
 /// This is a marker macro. Validation is performed, but no code is generated.
-/// The @Model macro detects #PrimaryKey calls and extracts KeyPaths.
+/// The @Persistable macro detects #PrimaryKey calls and extracts KeyPaths.
 public struct PrimaryKeyMacro: DeclarationMacro {
     public static func expansion(
         of node: some FreestandingMacroExpansionSyntax,
@@ -305,7 +305,7 @@ public struct PrimaryKeyMacro: DeclarationMacro {
 /// ```
 ///
 /// This is a marker macro. Validation is performed, but no code is generated.
-/// The @Model macro detects #Index calls and generates IndexDescriptor array.
+/// The @Persistable macro detects #Index calls and generates IndexDescriptor array.
 public struct IndexMacro: DeclarationMacro {
     public static func expansion(
         of node: some FreestandingMacroExpansionSyntax,
@@ -350,7 +350,7 @@ public struct IndexMacro: DeclarationMacro {
 @main
 struct FDBCoreMacrosPlugin: CompilerPlugin {
     let providingMacros: [Macro.Type] = [
-        ModelMacro.self,
+        PersistableMacro.self,
         PrimaryKeyMacro.self,
         IndexMacro.self,
         DirectoryMacro.self,

@@ -12,82 +12,82 @@ import FoundationDB
 /// - Use DataAccess to extract field values
 ///
 /// **Design**:
-/// - Protocol definition only in FDBRuntime
+/// - Protocol definition only in FDBIndexing
 /// - Concrete implementations in upper layers (fdb-record-layer, fdb-document-layer, etc.)
 /// - Each data model layer provides its own implementations
 ///
 /// **Usage Example** (fdb-record-layer):
 /// ```swift
-/// struct ValueIndexMaintainer<Record: Recordable>: IndexMaintainer {
+/// struct ValueIndexMaintainer<Item: Persistable>: IndexMaintainer {
 ///     func updateIndex(
-///         oldRecord: Record?,
-///         newRecord: Record?,
-///         dataAccess: any DataAccess<Record>,
+///         oldItem: Item?,
+///         newItem: Item?,
+///         dataAccess: any DataAccess<Item>,
 ///         transaction: any TransactionProtocol
 ///     ) async throws {
 ///         // Remove old index entries
-///         if let old = oldRecord {
+///         if let old = oldItem {
 ///             let oldValues = try dataAccess.evaluate(item: old, expression: index.rootExpression)
 ///             // Remove from index...
 ///         }
 ///
 ///         // Add new index entries
-///         if let new = newRecord {
+///         if let new = newItem {
 ///             let newValues = try dataAccess.evaluate(item: new, expression: index.rootExpression)
 ///             // Add to index...
 ///         }
 ///     }
 ///
-///     func scanRecord(
-///         _ record: Record,
+///     func scanItem(
+///         _ item: Item,
 ///         primaryKey: Tuple,
-///         dataAccess: any DataAccess<Record>,
+///         dataAccess: any DataAccess<Item>,
 ///         transaction: any TransactionProtocol
 ///     ) async throws {
-///         // Build index entries for this record
-///         let values = try dataAccess.evaluate(item: record, expression: index.rootExpression)
+///         // Build index entries for this item
+///         let values = try dataAccess.evaluate(item: item, expression: index.rootExpression)
 ///         // Add to index...
 ///     }
 /// }
 /// ```
-public protocol IndexMaintainer<Record>: Sendable {
-    associatedtype Record: Sendable
+public protocol IndexMaintainer<Item>: Sendable {
+    associatedtype Item: Sendable
 
-    /// Update index entries when a record changes
+    /// Update index entries when an item changes
     ///
-    /// This method is called when a record is inserted, updated, or deleted.
+    /// This method is called when an item is inserted, updated, or deleted.
     /// The implementation should:
-    /// 1. Remove old index entries (if oldRecord is not nil)
-    /// 2. Add new index entries (if newRecord is not nil)
+    /// 1. Remove old index entries (if oldItem is not nil)
+    /// 2. Add new index entries (if newItem is not nil)
     ///
     /// - Parameters:
-    ///   - oldRecord: The old record (nil if inserting)
-    ///   - newRecord: The new record (nil if deleting)
+    ///   - oldItem: The old item (nil if inserting)
+    ///   - newItem: The new item (nil if deleting)
     ///   - dataAccess: DataAccess for extracting field values
     ///   - transaction: The transaction to use
     /// - Throws: Error if index update fails
     func updateIndex(
-        oldRecord: Record?,
-        newRecord: Record?,
-        dataAccess: any DataAccess<Record>,
+        oldItem: Item?,
+        newItem: Item?,
+        dataAccess: any DataAccess<Item>,
         transaction: any TransactionProtocol
     ) async throws
 
-    /// Scan and build index entries for a record
+    /// Scan and build index entries for an item
     ///
     /// This method is called during batch index building (OnlineIndexer).
-    /// The implementation should build all index entries for the given record.
+    /// The implementation should build all index entries for the given item.
     ///
     /// - Parameters:
-    ///   - record: The record to scan
-    ///   - primaryKey: The record's primary key
+    ///   - item: The item to scan
+    ///   - primaryKey: The item's primary key
     ///   - dataAccess: DataAccess for extracting field values
     ///   - transaction: The transaction to use
     /// - Throws: Error if index building fails
-    func scanRecord(
-        _ record: Record,
+    func scanItem(
+        _ item: Item,
         primaryKey: Tuple,
-        dataAccess: any DataAccess<Record>,
+        dataAccess: any DataAccess<Item>,
         transaction: any TransactionProtocol
     ) async throws
 }

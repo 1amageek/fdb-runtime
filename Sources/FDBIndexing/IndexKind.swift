@@ -1,174 +1,206 @@
 // IndexKind.swift
-// FDBIndexing - Type-erased index kind wrapper
+// FDBIndexing - Protocol for defining index kinds
 //
-// Type-erased wrapper for storing any IndexKindProtocol implementation in Codable form.
-// Allows storing different index kinds in the same array.
+// Extension point allowing third parties to define custom index kinds.
+// New kinds can be added without modifying FDBIndexing itself.
 
 import Foundation
 
-/// Type-erased index kind wrapper
+/// Protocol for defining index kinds
 ///
-/// **Purpose**: Store any IndexKindProtocol implementation in Codable form
+/// **Extensibility**: Third parties can define custom kinds
+/// - No FDBIndexing modification required
+/// - New kinds added via protocol implementation only
 ///
-/// **Mechanism**:
-/// 1. Identify kind by `identifier`
-/// 2. Store JSON-encoded data in `configuration`
-/// 3. Type-safely decode with `decode<Kind>()`
+/// **Naming convention**:
+/// - Built-in: Lowercase words ("scalar", "count", "vector")
+/// - Extended: Reverse DNS format ("com.mycompany.bloom_filter")
 ///
-/// **Benefits**:
-/// - Store different kinds in the same array
-/// - Codable support (persistence & serialization)
-/// - Maintain type safety (validated during decode)
-///
-/// **Example**:
-/// ```swift
-/// // Encoding
-/// let scalarKind = try IndexKind(ScalarIndexKind())
-/// let vectorKind = try IndexKind(
-///     VectorIndexKind(dimensions: 384, metric: .cosine)
-/// )
-///
-/// // Store in array
-/// let kinds: [IndexKind] = [scalarKind, vectorKind]
-///
-/// // Codable (JSON persistence)
-/// let jsonData = try JSONEncoder().encode(kinds)
-/// let decoded = try JSONDecoder().decode([IndexKind].self, from: jsonData)
-///
-/// // Decoding
-/// let vector = try vectorKind.decode(VectorIndexKind.self)
-/// print(vector.dimensions)  // 384
-/// ```
-public struct IndexKind: Sendable, Codable, Hashable {
-    /// Kind identifier (IndexKindProtocol.identifier)
-    ///
-    /// **Purpose**: Determine correct kind type during decode
-    ///
-    /// **Examples**:
-    /// - "scalar"
-    /// - "vector"
-    /// - "com.mycompany.bloom_filter"
-    public let identifier: String
-
-    /// JSON-encoded configuration data
-    ///
-    /// **Content**: Kind-specific configuration (dimensions, metric, etc.)
-    ///
-    /// **Note**: This Data is JSON-encoded, supporting only Codable-conforming types.
-    public let configuration: Data
-
-    /// Type-safe initializer
-    ///
-    /// **Example**:
-    /// ```swift
-    /// // Built-in kind
-    /// let scalar = try IndexKind(ScalarIndexKind())
-    ///
-    /// // Extended kind (with configuration)
-    /// let vector = try IndexKind(
-    ///     VectorIndexKind(dimensions: 768, metric: .cosine)
-    /// )
-    ///
-    /// // Third-party kind
-    /// let bloom = try IndexKind(
-    ///     BloomFilterIndexKind(
-    ///         falsePositiveRate: 0.01,
-    ///         expectedCapacity: 10000
-    ///     )
-    /// )
-    /// ```
-    ///
-    /// - Parameter kind: Concrete index kind
-    /// - Throws: JSON encoding error
-    public init<Kind: IndexKindProtocol>(_ kind: Kind) throws {
-        self.identifier = Kind.identifier
-        self.configuration = try JSONEncoder().encode(kind)
-    }
-
-    /// Type-safe decode
-    ///
-    /// **Type check**: Error if identifier mismatch
-    ///
-    /// **Example**:
-    /// ```swift
-    /// let kind: IndexKind = ...
-    ///
-    /// // Correct kind decode
-    /// let vector = try kind.decode(VectorIndexKind.self)
-    /// print(vector.dimensions)  // OK
-    ///
-    /// // Wrong kind decode
-    /// let scalar = try kind.decode(ScalarIndexKind.self)  // Error: typeMismatch
-    /// ```
-    ///
-    /// - Parameter type: Expected kind type
-    /// - Returns: Decoded kind
-    /// - Throws:
-    ///   - IndexKindError.typeMismatch: identifier mismatch
-    ///   - DecodingError: JSON decoding error
-    public func decode<Kind: IndexKindProtocol>(_ type: Kind.Type) throws -> Kind {
-        guard identifier == Kind.identifier else {
-            throw IndexKindError.typeMismatch(
-                expected: Kind.identifier,
-                actual: identifier
-            )
-        }
-        return try JSONDecoder().decode(type, from: configuration)
-    }
-}
-
-// MARK: - IndexKindError
-
-/// IndexKind error type
+/// **Design principles**:
+/// - Type-safe validation (using Any.Type)
+/// - Structure declaration (SubspaceStructure)
+/// - Separation of implementation (no execution logic)
 ///
 /// **Example**:
 /// ```swift
-/// do {
-///     let scalar = try vectorKind.decode(ScalarIndexKind.self)
-/// } catch IndexKindError.typeMismatch(let expected, let actual) {
-///     print("Expected: \(expected), Actual: \(actual)")
+/// // Built-in kind
+/// public struct ScalarIndexKind: IndexKind {
+///     public static let identifier = "scalar"
+///     public static let subspaceStructure = SubspaceStructure.flat
+///
+///     public static func validateTypes(_ types: [Any.Type]) throws {
+///         for type in types {
+///             guard TypeValidation.isComparable(type) else {
+///                 throw IndexTypeValidationError.unsupportedType(...)
+///             }
+///         }
+///     }
+///
+///     public init() {}
+/// }
+///
+/// // Third-party kind
+/// public struct BloomFilterIndexKind: IndexKind {
+///     public static let identifier = "com.mycompany.bloom_filter"
+///     public static let subspaceStructure = SubspaceStructure.flat
+///
+///     public let falsePositiveRate: Double
+///     public let expectedCapacity: Int
+///
+///     public static func validateTypes(_ types: [Any.Type]) throws {
+///         // Custom validation logic
+///     }
+///
+///     public init(falsePositiveRate: Double, expectedCapacity: Int) {
+///         self.falsePositiveRate = falsePositiveRate
+///         self.expectedCapacity = expectedCapacity
+///     }
 /// }
 /// ```
-public enum IndexKindError: Error, CustomStringConvertible {
-    /// Type mismatch error
+public protocol IndexKind: Sendable, Codable, Hashable {
+    /// Unique identifier for this kind
     ///
-    /// Occurs when expected identifier differs from actual during decode.
+    /// **Naming convention**:
+    /// - Built-in kinds: Lowercase words ("scalar", "count", "vector")
+    /// - Extended kinds: Reverse DNS format ("com.mycompany.bloom_filter")
+    ///
+    /// **Examples**:
+    /// - "scalar" (built-in)
+    /// - "vector" (extended: FDBRecordVector)
+    /// - "com.mycompany.bloom_filter" (third-party)
+    ///
+    /// **Note**: This identifier is used in IndexKind's type erasure mechanism.
+    /// No two kinds may share the same identifier.
+    static var identifier: String { get }
+
+    /// Subspace structure type
+    ///
+    /// **Purpose**: Execution layer determines Subspace creation strategy
+    /// - `.flat`: Simple key structure [value][pk]
+    /// - `.hierarchical`: Complex hierarchy (consider DirectoryLayer)
+    /// - `.aggregation`: Store aggregated value directly [groupKey] → value
+    ///
+    /// **Note**: DirectoryLayer usage decision is delegated to execution layer
+    ///
+    /// **Examples**:
+    /// ```swift
+    /// // Scalar
+    /// static var subspaceStructure: SubspaceStructure { .flat }
+    ///
+    /// // Vector (HNSW)
+    /// static var subspaceStructure: SubspaceStructure { .hierarchical }
+    ///
+    /// // Count
+    /// static var subspaceStructure: SubspaceStructure { .aggregation }
+    /// ```
+    static var subspaceStructure: SubspaceStructure { get }
+
+    /// Validate whether this index kind supports specified types
+    ///
+    /// **Parameters**:
+    /// - types: Types of indexed fields (array order corresponds to keyPaths)
+    ///
+    /// **Throws**: IndexTypeValidationError if type not supported
+    ///
+    /// **Implementation guide**:
+    /// 1. Check field count (if necessary)
+    /// 2. Check each field type (use TypeValidation)
+    /// 3. Throw with detailed reason on error
+    ///
+    /// **Examples**:
+    /// ```swift
+    /// // Scalar: Supports all Comparable types
+    /// static func validateTypes(_ types: [Any.Type]) throws {
+    ///     for type in types {
+    ///         guard TypeValidation.isComparable(type) else {
+    ///             throw IndexTypeValidationError.unsupportedType(
+    ///                 index: identifier,
+    ///                 type: type,
+    ///                 reason: "Scalar index requires Comparable types"
+    ///             )
+    ///         }
+    ///     }
+    /// }
+    ///
+    /// // Vector: Single array type field only
+    /// static func validateTypes(_ types: [Any.Type]) throws {
+    ///     guard types.count == 1 else {
+    ///         throw IndexTypeValidationError.invalidTypeCount(
+    ///             index: identifier,
+    ///             expected: 1,
+    ///             actual: types.count
+    ///         )
+    ///     }
+    ///
+    ///     let type = types[0]
+    ///     let supportedTypes: [Any.Type] = [
+    ///         [Float32].self, [Float].self, [Double].self
+    ///     ]
+    ///
+    ///     var isSupported = false
+    ///     for supportedType in supportedTypes {
+    ///         if type == supportedType {
+    ///             isSupported = true
+    ///             break
+    ///         }
+    ///     }
+    ///
+    ///     guard isSupported else {
+    ///         throw IndexTypeValidationError.unsupportedType(
+    ///             index: identifier,
+    ///             type: type,
+    ///             reason: "Vector index requires array of numeric types"
+    ///         )
+    ///     }
+    /// }
+    /// ```
+    static func validateTypes(_ types: [Any.Type]) throws
+}
+
+/// Index type validation error
+///
+/// **Example**:
+/// ```swift
+/// throw IndexTypeValidationError.unsupportedType(
+///     index: "vector",
+///     type: String.self,
+///     reason: "Vector index requires array types"
+/// )
+/// ```
+public enum IndexTypeValidationError: Error, CustomStringConvertible {
+    /// Unsupported type
     ///
     /// - Parameters:
-    ///   - expected: Expected identifier
-    ///   - actual: Actual identifier
-    case typeMismatch(expected: String, actual: String)
+    ///   - index: Index kind identifier
+    ///   - type: Unsupported type
+    ///   - reason: Error reason (user-facing message)
+    case unsupportedType(index: String, type: Any.Type, reason: String)
 
-    /// Unsupported kind
+    /// Invalid field count
     ///
-    /// Occurs when attempting to use unregistered kind in execution layer.
+    /// - Parameters:
+    ///   - index: Index kind identifier
+    ///   - expected: Expected field count
+    ///   - actual: Actual field count
+    case invalidTypeCount(index: String, expected: Int, actual: Int)
+
+    /// Custom validation failed
     ///
-    /// - Parameter identifier: Unsupported identifier
-    case unsupportedKind(String)
+    /// - Parameters:
+    ///   - index: Index kind identifier
+    ///   - reason: Failure reason (user-facing message)
+    case customValidationFailed(index: String, reason: String)
 
     public var description: String {
         switch self {
-        case let .typeMismatch(expected, actual):
-            return "IndexKind type mismatch: expected '\(expected)', but got '\(actual)'"
+        case let .unsupportedType(index, type, reason):
+            return "Index '\(index)' does not support type '\(type)': \(reason)"
 
-        case let .unsupportedKind(identifier):
-            return "Unsupported index kind: '\(identifier)'"
+        case let .invalidTypeCount(index, expected, actual):
+            return "Index '\(index)' expects \(expected) field(s), but got \(actual)"
+
+        case let .customValidationFailed(index, reason):
+            return "Index '\(index)' validation failed: \(reason)"
         }
     }
-}
-
-// MARK: - Convenience Extensions
-
-extension IndexKind {
-    /// Convenience constructors for built-in kinds
-    ///
-    /// **Example**:
-    /// ```swift
-    /// let scalar = try IndexKind.scalar
-    /// let count = try IndexKind.count
-    /// let sum = try IndexKind.sum
-    /// ```
-    ///
-    /// **Note**: These methods will be added after built-in kind implementations.
-    /// Implementations are placed in respective IndexKind definition files.
 }

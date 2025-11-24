@@ -1,5 +1,5 @@
 // ScalarIndexKindTests.swift
-// FDBIndexing Tests - ScalarIndexKind のテスト
+// FDBIndexing Tests - ScalarIndexKind tests
 
 import Testing
 import Foundation
@@ -54,20 +54,20 @@ struct ScalarIndexKindTests {
 
     @Test("ScalarIndexKind rejects empty fields")
     func testRejectEmptyFields() {
-        #expect(throws: IndexTypeValidationError.self) {
+        #expect(throws: IndexError.self) {
             try ScalarIndexKind.validateTypes([])
         }
     }
 
     @Test("ScalarIndexKind rejects non-Comparable types")
     func testRejectNonComparableTypes() {
-        // Array型（Comparableでない）
-        #expect(throws: IndexTypeValidationError.self) {
+        // Array type (not Comparable)
+        #expect(throws: IndexError.self) {
             try ScalarIndexKind.validateTypes([[Int].self])
         }
 
-        // Optional型（Comparableでない）
-        #expect(throws: IndexTypeValidationError.self) {
+        // Optional type (not Comparable)
+        #expect(throws: IndexError.self) {
             try ScalarIndexKind.validateTypes([Int?.self])
         }
     }
@@ -78,11 +78,11 @@ struct ScalarIndexKindTests {
     func testCodable() throws {
         let kind = ScalarIndexKind()
 
-        // JSON エンコード
+        // JSON encoding
         let encoder = JSONEncoder()
         let data = try encoder.encode(kind)
 
-        // JSON デコード
+        // JSON decoding
         let decoder = JSONDecoder()
         let decoded = try decoder.decode(ScalarIndexKind.self, from: data)
 

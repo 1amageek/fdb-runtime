@@ -8,51 +8,49 @@ let package = Package(
     name: "fdb-runtime",
     platforms: [
         .macOS(.v15),
-        .iOS(.v17),
-        .tvOS(.v17),
-        .watchOS(.v10),
-        .visionOS(.v1)
     ],
     products: [
-        // FDBIndexing: インデックスメタデータ層（全プラットフォーム、依存なし）
+        // FDBIndexing: Index abstraction layer (FDB-dependent, Server-only)
         .library(
             name: "FDBIndexing",
             targets: ["FDBIndexing"]
         ),
-        // FDBCore: FDB非依存のコア機能（Server-Client共通）
+        // FDBCore: FDB-independent core functionality (Server-only, model definitions only)
         .library(
             name: "FDBCore",
             targets: ["FDBCore"]
         ),
-        // FDBRuntime: FDB依存の実行基盤（Server専用）
+        // FDBRuntime: FDB-dependent runtime layer (Server-only, Store implementation)
         .library(
             name: "FDBRuntime",
             targets: ["FDBRuntime"]
         ),
     ],
     dependencies: [
-        // FoundationDB Swift Bindings (Server専用)
+        // FoundationDB Swift Bindings (Server-only)
         .package(path: "../fdb-swift-bindings"),
 
-        // Swift Syntax (マクロ用)
+        // Swift Syntax (for macros)
         .package(url: "https://github.com/apple/swift-syntax.git", from: "600.0.0"),
 
         // Logging (optional, for FDBRuntime)
         .package(url: "https://github.com/apple/swift-log.git", from: "1.6.4"),
     ],
     targets: [
-        // MARK: - FDBIndexing (メタデータ層、全プラットフォーム、依存なし)
+        // MARK: - FDBIndexing (Index abstraction layer, FDB-dependent, Server-only)
 
         .target(
             name: "FDBIndexing",
-            dependencies: [],
+            dependencies: [
+                .product(name: "FoundationDB", package: "fdb-swift-bindings"),
+            ],
             path: "Sources/FDBIndexing",
             swiftSettings: [
                 .swiftLanguageMode(.v6)
             ]
         ),
 
-        // MARK: - FDBCore (FDB非依存、全プラットフォーム)
+        // MARK: - FDBCore (FDB-independent, all platforms)
 
         .target(
             name: "FDBCore",
@@ -66,7 +64,7 @@ let package = Package(
             ]
         ),
 
-        // MARK: - FDBCoreMacros (マクロプラグイン)
+        // MARK: - FDBCoreMacros (Macro plugin)
 
         .macro(
             name: "FDBCoreMacros",
@@ -80,12 +78,13 @@ let package = Package(
             ]
         ),
 
-        // MARK: - FDBRuntime (FDB依存、Server専用)
+        // MARK: - FDBRuntime (FDB-dependent, Server-only)
 
         .target(
             name: "FDBRuntime",
             dependencies: [
                 "FDBCore",
+                "FDBIndexing",
                 .product(name: "FoundationDB", package: "fdb-swift-bindings"),
                 .product(name: "Logging", package: "swift-log"),
             ],
@@ -99,10 +98,17 @@ let package = Package(
 
         .testTarget(
             name: "FDBIndexingTests",
-            dependencies: ["FDBIndexing"],
+            dependencies: [
+                "FDBIndexing",
+                .product(name: "FoundationDB", package: "fdb-swift-bindings"),
+            ],
             path: "Tests/FDBIndexingTests",
             swiftSettings: [
                 .swiftLanguageMode(.v6)
+            ],
+            linkerSettings: [
+                .unsafeFlags(["-L/usr/local/lib"]),
+                .unsafeFlags(["-Xlinker", "-rpath", "-Xlinker", "/usr/local/lib"])
             ]
         ),
         .testTarget(
@@ -115,11 +121,19 @@ let package = Package(
             path: "Tests/FDBCoreTests",
             swiftSettings: [
                 .swiftLanguageMode(.v6)
+            ],
+            linkerSettings: [
+                .unsafeFlags(["-L/usr/local/lib"]),
+                .unsafeFlags(["-Xlinker", "-rpath", "-Xlinker", "/usr/local/lib"])
             ]
         ),
         .testTarget(
             name: "FDBRuntimeTests",
-            dependencies: ["FDBRuntime", "FDBCore"],
+            dependencies: [
+                "FDBRuntime",
+                "FDBCore",
+                "FDBIndexing",
+            ],
             path: "Tests/FDBRuntimeTests",
             swiftSettings: [
                 .swiftLanguageMode(.v6)

@@ -3,8 +3,8 @@ import Foundation
 import FDBCore
 import FDBIndexing
 
-/// Tests for @Model macro validation and edge cases
-@Suite("@Model Macro Validation Tests")
+/// Tests for @Persistable macro validation and edge cases
+@Suite("@Persistable Macro Validation Tests")
 struct ModelMacroValidationTests {
 
     /// Test that invalid KeyPath in PrimaryKey is caught at compile time
@@ -13,7 +13,7 @@ struct ModelMacroValidationTests {
         // This should fail at compile time if KeyPath validation works
         // Commenting out to allow build to succeed
 
-        // @Model
+        // @Persistable
         // struct BadUser {
         //     #PrimaryKey<BadUser>([\.nonExistentField])  // ← Should error
         //     var userID: Int64
@@ -49,24 +49,24 @@ struct ModelMacroValidationTests {
         // EmptyPKUser does not declare #PrimaryKey, so primaryKeyFields should not exist
         // This is expected behavior: Model protocol does not require primaryKeyFields (layer-independent)
 
-        // Verify that EmptyPKUser still conforms to Model protocol
-        #expect(EmptyPKUser.modelName == "EmptyPKUser")
+        // Verify that EmptyPKUser still conforms to Persistable protocol
+        #expect(EmptyPKUser.persistableType == "EmptyPKUser")
         #expect(EmptyPKUser.allFields == ["userID", "email"])
 
         // Note: primaryKeyFields is only generated when #PrimaryKey is declared
         // EmptyPKUser.primaryKeyFields would be a compile error (expected)
     }
 
-    /// Test IndexKind initialization doesn't fail
-    @Test("IndexKind initialization with built-in kinds")
-    func indexKindInitialization() throws {
-        // Verify that all built-in IndexKinds can be initialized
-        _ = try IndexKind(ScalarIndexKind())
-        _ = try IndexKind(CountIndexKind())
-        _ = try IndexKind(SumIndexKind())
-        _ = try IndexKind(MinIndexKind())
-        _ = try IndexKind(MaxIndexKind())
-        _ = try IndexKind(VersionIndexKind())
+    /// Test IndexKind types can be created
+    @Test("IndexKind types can be instantiated")
+    func indexKindInstantiation() throws {
+        // Verify that all built-in IndexKinds can be created
+        _ = ScalarIndexKind()
+        _ = CountIndexKind()
+        _ = SumIndexKind()
+        _ = MinIndexKind()
+        _ = MaxIndexKind()
+        _ = VersionIndexKind()
 
         // All should succeed without throwing
     }
@@ -74,7 +74,7 @@ struct ModelMacroValidationTests {
 
 // MARK: - Test Structs
 
-@Model
+@Persistable
 struct OrderedIndexProduct {
     #PrimaryKey<OrderedIndexProduct>([\.productID])
     #Index<OrderedIndexProduct>([\.category], type: ScalarIndexKind())
@@ -87,7 +87,7 @@ struct OrderedIndexProduct {
     var name: String
 }
 
-@Model
+@Persistable
 struct StableFieldUser {
     #PrimaryKey<StableFieldUser>([\.userID])
 
@@ -97,7 +97,7 @@ struct StableFieldUser {
     var createdAt: Date
 }
 
-@Model
+@Persistable
 struct EmptyPKUser {
     // Note: No #PrimaryKey declaration
     var userID: Int64

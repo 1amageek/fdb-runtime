@@ -3,22 +3,22 @@ import Foundation
 import FDBCore
 import FDBIndexing
 
-/// Tests for @Model macro
-@Suite("@Model Macro Tests")
+/// Tests for @Persistable macro
+@Suite("@Persistable Macro Tests")
 struct ModelMacroTests {
 
-    /// Test basic @Model expansion
-    @Test("Basic @Model with PrimaryKey")
+    /// Test basic @Persistable expansion
+    @Test("Basic @Persistable with PrimaryKey")
     func basicModel() {
         // Verify generated properties
-        #expect(BasicUser.modelName == "BasicUser")
+        #expect(BasicUser.persistableType == "BasicUser")
         #expect(BasicUser.primaryKeyFields == ["userID"])
         #expect(BasicUser.allFields == ["userID", "email", "name"])
         #expect(BasicUser.indexDescriptors.isEmpty)
     }
 
-    /// Test @Model with #Index
-    @Test("@Model with single Index")
+    /// Test @Persistable with #Index
+    @Test("@Persistable with single Index")
     func modelWithIndex() {
         // Verify index descriptors
         #expect(IndexedUser.indexDescriptors.count == 1)
@@ -30,8 +30,8 @@ struct ModelMacroTests {
         #expect(emailIndex.isUnique == true)
     }
 
-    /// Test @Model with multiple indexes
-    @Test("@Model with multiple indexes")
+    /// Test @Persistable with multiple indexes
+    @Test("@Persistable with multiple indexes")
     func modelWithMultipleIndexes() {
         // Verify multiple indexes
         #expect(Product.indexDescriptors.count == 2)
@@ -50,8 +50,8 @@ struct ModelMacroTests {
         #expect(compositeIndex.kindIdentifier == "scalar")
     }
 
-    /// Test @Model with custom index name
-    @Test("@Model with custom index name")
+    /// Test @Persistable with custom index name
+    @Test("@Persistable with custom index name")
     func modelWithCustomIndexName() {
         // Verify custom index name
         #expect(CustomNamedUser.indexDescriptors.count == 1)
@@ -59,15 +59,15 @@ struct ModelMacroTests {
         #expect(emailIndex.name == "user_email_idx")
     }
 
-    /// Test @Model with composite primary key
-    @Test("@Model with composite primary key")
+    /// Test @Persistable with composite primary key
+    @Test("@Persistable with composite primary key")
     func modelWithCompositePrimaryKey() {
         // Verify composite primary key
         #expect(Order.primaryKeyFields == ["accountID", "orderID"])
         #expect(Order.allFields == ["accountID", "orderID", "amount"])
     }
 
-    /// Test @Model fieldNumber generation
+    /// Test @Persistable fieldNumber generation
     @Test("fieldNumber method generates sequential numbers")
     func fieldNumberGeneration() {
         // Verify field numbers
@@ -77,8 +77,8 @@ struct ModelMacroTests {
         #expect(FieldNumberUser.fieldNumber(for: "nonexistent") == nil)
     }
 
-    /// Test @Model with different IndexKinds
-    @Test("@Model with different IndexKind types")
+    /// Test @Persistable with different IndexKinds
+    @Test("@Persistable with different IndexKind types")
     func modelWithDifferentIndexKinds() {
         // Verify different index kinds
         #expect(Analytics.indexDescriptors.count == 3)
@@ -93,8 +93,8 @@ struct ModelMacroTests {
         #expect(sumIndex.kindIdentifier == "sum")
     }
 
-    /// Test @Model Codable conformance
-    @Test("@Model generates Codable conformance")
+    /// Test @Persistable Codable conformance
+    @Test("@Persistable generates Codable conformance")
     func modelCodableConformance() throws {
         let user = CodableUser(userID: 1, email: "test@example.com", name: "Alice")
 
@@ -110,8 +110,8 @@ struct ModelMacroTests {
         #expect(decoded.name == user.name)
     }
 
-    /// Test @Model Sendable conformance
-    @Test("@Model generates Sendable conformance")
+    /// Test @Persistable Sendable conformance
+    @Test("@Persistable generates Sendable conformance")
     func modelSendableConformance() {
         // This test verifies that the compiler accepts User as Sendable
         let _: any Sendable = SendableUser(userID: 1, email: "test@example.com")
@@ -120,7 +120,7 @@ struct ModelMacroTests {
 
 // MARK: - Test Structs (File Scope)
 
-@Model
+@Persistable
 struct BasicUser {
     #PrimaryKey<BasicUser>([\.userID])
 
@@ -129,7 +129,7 @@ struct BasicUser {
     var name: String
 }
 
-@Model
+@Persistable
 struct IndexedUser {
     #PrimaryKey<IndexedUser>([\.userID])
     #Index<IndexedUser>([\.email], type: ScalarIndexKind(), unique: true)
@@ -139,7 +139,7 @@ struct IndexedUser {
     var name: String
 }
 
-@Model
+@Persistable
 struct Product {
     #PrimaryKey<Product>([\.productID])
     #Index<Product>([\.category], type: ScalarIndexKind())
@@ -151,7 +151,7 @@ struct Product {
     var name: String
 }
 
-@Model
+@Persistable
 struct CustomNamedUser {
     #PrimaryKey<CustomNamedUser>([\.userID])
     #Index<CustomNamedUser>([\.email], type: ScalarIndexKind(), name: "user_email_idx")
@@ -160,7 +160,7 @@ struct CustomNamedUser {
     var email: String
 }
 
-@Model
+@Persistable
 struct Order {
     #PrimaryKey<Order>([\.accountID, \.orderID])
 
@@ -169,7 +169,7 @@ struct Order {
     var amount: Double
 }
 
-@Model
+@Persistable
 struct FieldNumberUser {
     #PrimaryKey<FieldNumberUser>([\.userID])
 
@@ -178,7 +178,7 @@ struct FieldNumberUser {
     var name: String
 }
 
-@Model
+@Persistable
 struct Analytics {
     #PrimaryKey<Analytics>([\.eventID])
     #Index<Analytics>([\.category], type: ScalarIndexKind())
@@ -190,7 +190,7 @@ struct Analytics {
     var value: Double
 }
 
-@Model
+@Persistable
 struct CodableUser {
     #PrimaryKey<CodableUser>([\.userID])
 
@@ -199,7 +199,7 @@ struct CodableUser {
     var name: String
 }
 
-@Model
+@Persistable
 struct SendableUser {
     #PrimaryKey<SendableUser>([\.userID])
 

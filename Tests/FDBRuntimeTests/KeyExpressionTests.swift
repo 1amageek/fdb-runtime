@@ -1,5 +1,6 @@
 import Testing
 import Foundation
+@testable import FDBIndexing
 @testable import FDBRuntime
 
 @Suite("KeyExpression Tests")

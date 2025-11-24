@@ -5,6 +5,7 @@
 // Stores Int64 count value for each grouping key.
 
 import Foundation
+import FoundationDB
 
 /// COUNT aggregation index kind
 ///
@@ -48,7 +49,7 @@ import Foundation
 /// )
 /// // → Int64 (e.g., 12345)
 /// ```
-public struct CountIndexKind: IndexKindProtocol {
+public struct CountIndexKind: IndexKind {
     /// Kind identifier (built-in kinds use lowercase words)
     public static let identifier = "count"
 
@@ -84,24 +85,20 @@ public struct CountIndexKind: IndexKindProtocol {
     /// ```
     ///
     /// - Parameter types: Array of grouping field types
-    /// - Throws: IndexTypeValidationError.unsupportedType
+    /// - Throws: IndexError.invalidConfiguration
     public static func validateTypes(_ types: [Any.Type]) throws {
         // At least one grouping field is required
         guard !types.isEmpty else {
-            throw IndexTypeValidationError.invalidTypeCount(
-                index: identifier,
-                expected: 1,
-                actual: 0
+            throw IndexError.invalidConfiguration(
+                "Count index requires at least 1 grouping field, got 0"
             )
         }
 
         // All grouping fields must conform to Comparable
         for type in types {
             guard TypeValidation.isComparable(type) else {
-                throw IndexTypeValidationError.unsupportedType(
-                    index: identifier,
-                    type: type,
-                    reason: "Count index requires Comparable types for grouping fields"
+                throw IndexError.invalidConfiguration(
+                    "Count index requires Comparable types for grouping fields, got \(type)"
                 )
             }
         }
@@ -114,4 +111,6 @@ public struct CountIndexKind: IndexKindProtocol {
     /// let kind = try IndexKind(CountIndexKind())
     /// ```
     public init() {}
+
+    /// Create index maintainer (placeholder - actual implementation in upper layers)
 }
