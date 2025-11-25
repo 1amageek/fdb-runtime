@@ -1,4 +1,6 @@
 import Foundation
+import FDBModel
+import FDBCore
 
 /// Index definition
 ///

@@ -1,5 +1,7 @@
 import Foundation
 import FoundationDB
+import FDBModel
+import FDBCore
 
 /// Protocol for maintaining an index
 ///
@@ -22,18 +24,17 @@ import FoundationDB
 ///     func updateIndex(
 ///         oldItem: Item?,
 ///         newItem: Item?,
-///         dataAccess: any DataAccess<Item>,
 ///         transaction: any TransactionProtocol
 ///     ) async throws {
 ///         // Remove old index entries
 ///         if let old = oldItem {
-///             let oldValues = try dataAccess.evaluate(item: old, expression: index.rootExpression)
+///             let oldValues = try DataAccess.evaluate(item: old, expression: index.rootExpression)
 ///             // Remove from index...
 ///         }
 ///
 ///         // Add new index entries
 ///         if let new = newItem {
-///             let newValues = try dataAccess.evaluate(item: new, expression: index.rootExpression)
+///             let newValues = try DataAccess.evaluate(item: new, expression: index.rootExpression)
 ///             // Add to index...
 ///         }
 ///     }
@@ -41,17 +42,16 @@ import FoundationDB
 ///     func scanItem(
 ///         _ item: Item,
 ///         primaryKey: Tuple,
-///         dataAccess: any DataAccess<Item>,
 ///         transaction: any TransactionProtocol
 ///     ) async throws {
 ///         // Build index entries for this item
-///         let values = try dataAccess.evaluate(item: item, expression: index.rootExpression)
+///         let values = try DataAccess.evaluate(item: item, expression: index.rootExpression)
 ///         // Add to index...
 ///     }
 /// }
 /// ```
 public protocol IndexMaintainer<Item>: Sendable {
-    associatedtype Item: Sendable
+    associatedtype Item: Persistable
 
     /// Update index entries when an item changes
     ///
@@ -63,13 +63,13 @@ public protocol IndexMaintainer<Item>: Sendable {
     /// - Parameters:
     ///   - oldItem: The old item (nil if inserting)
     ///   - newItem: The new item (nil if deleting)
-    ///   - dataAccess: DataAccess for extracting field values
     ///   - transaction: The transaction to use
     /// - Throws: Error if index update fails
+    ///
+    /// **Note**: Use `DataAccess.extractField()` and `DataAccess.evaluate()` to access item fields
     func updateIndex(
         oldItem: Item?,
         newItem: Item?,
-        dataAccess: any DataAccess<Item>,
         transaction: any TransactionProtocol
     ) async throws
 
@@ -81,13 +81,43 @@ public protocol IndexMaintainer<Item>: Sendable {
     /// - Parameters:
     ///   - item: The item to scan
     ///   - primaryKey: The item's primary key
-    ///   - dataAccess: DataAccess for extracting field values
     ///   - transaction: The transaction to use
     /// - Throws: Error if index building fails
+    ///
+    /// **Note**: Use `DataAccess.extractField()` and `DataAccess.evaluate()` to access item fields
     func scanItem(
         _ item: Item,
         primaryKey: Tuple,
-        dataAccess: any DataAccess<Item>,
         transaction: any TransactionProtocol
     ) async throws
+
+    /// Optional custom build strategy for this index
+    ///
+    /// Some index types (e.g., HNSW) require specialized bulk build logic that
+    /// differs from the standard scan-based approach. If provided, OnlineIndexer
+    /// will use this strategy instead of calling scanItem() for each item.
+    ///
+    /// **Default**: nil (use standard scan-based build via scanItem())
+    ///
+    /// **When to Provide**:
+    /// - Index requires bulk construction (e.g., HNSW graph building)
+    /// - Standard item-by-item scanning is inefficient
+    /// - Need access to all data at once for optimization
+    ///
+    /// **Example** (HNSW):
+    /// ```swift
+    /// public var customBuildStrategy: (any IndexBuildStrategy<Item>)? {
+    ///     return HNSWBuildStrategy(maintainer: self)
+    /// }
+    /// ```
+    var customBuildStrategy: (any IndexBuildStrategy<Item>)? { get }
+}
+
+// MARK: - Default Implementations
+
+extension IndexMaintainer {
+    /// Default: no custom build strategy (use standard scan-based build)
+    public var customBuildStrategy: (any IndexBuildStrategy<Item>)? {
+        return nil
+    }
 }

@@ -1,7 +1,6 @@
 import Testing
 import Foundation
-import FDBCore
-import FDBIndexing
+@testable import FDBModel
 
 /// Tests for @Persistable macro validation and edge cases
 @Suite("@Persistable Macro Validation Tests")

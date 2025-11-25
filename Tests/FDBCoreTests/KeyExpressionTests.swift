@@ -1,5 +1,7 @@
 import Testing
 import Foundation
+import FDBModel
+@testable import FDBCore
 @testable import FDBIndexing
 @testable import FDBRuntime
 

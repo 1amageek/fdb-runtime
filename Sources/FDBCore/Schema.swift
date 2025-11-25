@@ -1,6 +1,5 @@
 import Foundation
-import FDBCore
-import FDBIndexing
+import FDBModel
 import Synchronization
 
 /// Schema - Type-independent schema management

@@ -1,5 +1,7 @@
 import Foundation
 import FoundationDB
+import FDBModel
+import FDBCore
 import FDBIndexing
 
 /// Migration Definition
@@ -190,18 +192,41 @@ public struct MigrationContext: Sendable {
         }
 
         // TODO: Build index via OnlineIndexer
-        // Until OnlineIndexer is integrated, index remains in writeOnly state
-        // This prevents empty indexes from being marked readable
         //
-        // ⚠️ IMPORTANT: Index is now in writeOnly state (NOT queryable)
-        // Queries will NOT use this index until OnlineIndexer builds it.
-        // Required steps to make queryable:
-        //   1. Implement OnlineIndexer integration here
-        //   2. Build the index with OnlineIndexer
-        //   3. Call: indexManager.makeReadable(index.name)
-
-        // FUTURE: After OnlineIndexer builds the index
-        // try await indexManager.makeReadable(index.name)
+        // ⚠️ LIMITATION: OnlineIndexer requires IndexMaintainer,
+        // which are provided by upper layers (fdb-record-layer, etc.).
+        // FDBRuntime cannot instantiate IndexMaintainer without layer-specific knowledge.
+        //
+        // **Solution**: Upper layers must implement their own index building:
+        //
+        // Example (in fdb-record-layer):
+        // ```swift
+        // extension RecordStore {
+        //     func buildIndex(named indexName: String) async throws {
+        //         let index = try indexManager.getIndex(indexName)
+        //         let indexMaintainer = try indexKind.makeIndexMaintainer(...)
+        //
+        //         let onlineIndexer = OnlineIndexer(
+        //             database: database,
+        //             itemSubspace: recordSubspace,
+        //             indexSubspace: indexSubspace,
+        //             itemType: Record.persistableType,
+        //             index: index,
+        //             indexMaintainer: indexMaintainer,
+        //             indexStateManager: indexStateManager,
+        //             batchSize: 100
+        //         )
+        //
+        //         try await onlineIndexer.buildIndex(clearFirst: false)
+        //     }
+        // }
+        // ```
+        //
+        // **Note**: DataAccess is now a struct with static functions.
+        // IndexMaintainer uses `DataAccess.deserialize()`, `DataAccess.evaluate()`, etc. directly.
+        //
+        // **Current State**: Index is in writeOnly state (NOT queryable)
+        // Upper layer must call buildIndex() to complete the process
     }
 
     /// Remove an index and add FormerIndex entry
@@ -343,10 +368,11 @@ public struct MigrationContext: Sendable {
         }
 
         // TODO: Build index via OnlineIndexer
-        // Until OnlineIndexer is integrated, index remains in writeOnly state
-
-        // FUTURE: After OnlineIndexer rebuilds the index
-        // try await indexManager.makeReadable(indexName)
+        // Same limitation as addIndex() - requires upper layer implementation
+        // See addIndex() comments for details on OnlineIndexer integration
+        //
+        // **Note**: DataAccess is now a struct with static functions.
+        // No need to pass DataAccess instances - use static methods directly.
     }
 
     // MARK: - Utility

@@ -1,6 +1,7 @@
 import Testing
 import Foundation
 import FoundationDB
+import FDBModel
 @testable import FDBRuntime
 @testable import FDBCore
 @testable import FDBIndexing
@@ -47,6 +48,15 @@ struct MigrationTests {
         var id: Int64
         var email: String
         var name: String
+
+        subscript(dynamicMember member: String) -> (any Sendable)? {
+            switch member {
+            case "id": return id
+            case "email": return email
+            case "name": return name
+            default: return nil
+            }
+        }
     }
 
     struct TestProduct: Persistable, Codable, Sendable {
@@ -79,6 +89,15 @@ struct MigrationTests {
         var id: Int64
         var name: String
         var price: Double
+
+        subscript(dynamicMember member: String) -> (any Sendable)? {
+            switch member {
+            case "id": return id
+            case "name": return name
+            case "price": return price
+            default: return nil
+            }
+        }
     }
 
     // MARK: - Helper Methods

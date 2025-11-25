@@ -1,5 +1,6 @@
 import Testing
 import Foundation
+import FDBIndexing
 @testable import FDBRuntime
 
 @Suite("IndexState Tests")

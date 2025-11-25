@@ -1,5 +1,6 @@
 import Testing
 import Foundation
+import FDBModel
 @testable import FDBRuntime
 @testable import FDBCore
 @testable import FDBIndexing
@@ -46,6 +47,15 @@ struct SchemaTests {
         var userID: Int64
         var email: String
         var name: String
+
+        subscript(dynamicMember member: String) -> (any Sendable)? {
+            switch member {
+            case "userID": return userID
+            case "email": return email
+            case "name": return name
+            default: return nil
+            }
+        }
     }
 
     struct Order: Persistable, Codable, Sendable {
@@ -84,6 +94,15 @@ struct SchemaTests {
         var orderID: Int64
         var userID: Int64
         var amount: Double
+
+        subscript(dynamicMember member: String) -> (any Sendable)? {
+            switch member {
+            case "orderID": return orderID
+            case "userID": return userID
+            case "amount": return amount
+            default: return nil
+            }
+        }
     }
 
     // MARK: - Tests

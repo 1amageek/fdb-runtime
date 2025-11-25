@@ -1,8 +1,11 @@
 // IndexKind.swift
-// FDBIndexing - Protocol for defining index kinds
+// FDBCore - Protocol for defining index kind metadata
 //
 // Extension point allowing third parties to define custom index kinds.
-// New kinds can be added without modifying FDBIndexing itself.
+// New kinds can be added without modifying FDBCore itself.
+//
+// **Note**: This is the metadata-only base protocol. For runtime capabilities
+// (creating IndexMaintainer), see IndexKind protocol in FDBIndexing.
 
 import Foundation
 
@@ -23,7 +26,7 @@ import Foundation
 ///
 /// **Example**:
 /// ```swift
-/// // Built-in kind (metadata only, in fdb-runtime/FDBIndexing)
+/// // Built-in kind (in fdb-indexes/ScalarIndexLayer)
 /// public struct ScalarIndexKind: IndexKind {
 ///     public static let identifier = "scalar"
 ///     public static let subspaceStructure = SubspaceStructure.flat
@@ -37,17 +40,6 @@ import Foundation
 ///     }
 ///
 ///     public init() {}
-/// }
-///
-/// // Implementation with IndexMaintainer factory (in fdb-indexes package)
-/// extension ScalarIndexKind {
-///     public func makeIndexMaintainer<Item: Sendable>(
-///         index: Index,
-///         subspace: Subspace,
-///         configuration: AlgorithmConfiguration?
-///     ) throws -> any IndexMaintainer<Item> {
-///         return ScalarIndexMaintainer<Item>(index: index, kind: self, subspace: subspace)
-///     }
 /// }
 ///
 /// // Third-party kind (in third-party package)
@@ -65,21 +57,6 @@ import Foundation
 ///     public init(falsePositiveRate: Double, expectedCapacity: Int) {
 ///         self.falsePositiveRate = falsePositiveRate
 ///         self.expectedCapacity = expectedCapacity
-///     }
-/// }
-///
-/// // Implementation (in same third-party package)
-/// extension BloomFilterIndexKind {
-///     public func makeIndexMaintainer<Item: Sendable>(
-///         index: Index,
-///         subspace: Subspace,
-///         configuration: AlgorithmConfiguration?
-///     ) throws -> any IndexMaintainer<Item> {
-///         return BloomFilterIndexMaintainer<Item>(
-///             index: index,
-///             kind: self,
-///             subspace: subspace
-///         )
 ///     }
 /// }
 /// ```
@@ -181,29 +158,6 @@ public protocol IndexKind: Sendable, Codable, Hashable {
     /// }
     /// ```
     static func validateTypes(_ types: [Any.Type]) throws
-
-    // NOTE: makeIndexMaintainer is NOT a protocol requirement
-    //
-    // **Design Decision**: makeIndexMaintainer is implemented by concrete IndexKind types
-    // in upper layers (e.g., fdb-indexes package), but is NOT required by the protocol.
-    //
-    // **Rationale**:
-    // - FDBIndexing contains metadata-only IndexKind definitions (used by @Persistable macro, schema, tests)
-    // - Actual IndexMaintainer implementations are in separate packages (fdb-indexes, third-party packages)
-    // - Requiring makeIndexMaintainer would create circular dependency (fdb-runtime → fdb-indexes → fdb-runtime)
-    //
-    // **Implementation Pattern** (in fdb-indexes or third-party packages):
-    // ```swift
-    // extension ScalarIndexKind {
-    //     public func makeIndexMaintainer<Item: Sendable>(
-    //         index: Index,
-    //         subspace: Subspace,
-    //         configuration: AlgorithmConfiguration?
-    //     ) throws -> any IndexMaintainer<Item> {
-    //         return ScalarIndexMaintainer<Item>(index: index, kind: self, subspace: subspace)
-    //     }
-    // }
-    // ```
 }
 
 /// Index type validation error

@@ -1,7 +1,6 @@
 import Testing
 import Foundation
-import FDBCore
-import FDBIndexing
+@testable import FDBModel
 
 /// Tests for @Persistable macro
 @Suite("@Persistable Macro Tests")

@@ -1,5 +1,4 @@
 import Foundation
-import FDBIndexing
 
 /// @Persistable macro declaration
 ///
@@ -34,9 +33,9 @@ import FDBIndexing
 ///
 /// **Note**: primaryKeyFields is only generated if #PrimaryKey is declared.
 /// The Persistable protocol itself does not require primaryKeyFields (layer-independent).
-@attached(member, names: named(persistableType), named(primaryKeyFields), named(allFields), named(indexDescriptors), named(fieldNumber), named(enumMetadata))
+@attached(member, names: named(persistableType), named(primaryKeyFields), named(allFields), named(indexDescriptors), named(fieldNumber), named(enumMetadata), named(subscript))
 @attached(extension, conformances: Persistable, Codable, Sendable)
-public macro Persistable() = #externalMacro(module: "FDBCoreMacros", type: "PersistableMacro")
+public macro Persistable() = #externalMacro(module: "FDBModelMacros", type: "PersistableMacro")
 
 /// #PrimaryKey macro declaration
 ///
@@ -57,7 +56,7 @@ public macro Persistable() = #externalMacro(module: "FDBCoreMacros", type: "Pers
 /// - VectorLayer: Primary key typically required for vector lookups
 /// - GraphLayer: Nodes and edges have separate primary keys
 @freestanding(declaration)
-public macro PrimaryKey<T>(_ keyPaths: [PartialKeyPath<T>]) = #externalMacro(module: "FDBCoreMacros", type: "PrimaryKeyMacro")
+public macro PrimaryKey<T>(_ keyPaths: [PartialKeyPath<T>]) = #externalMacro(module: "FDBModelMacros", type: "PrimaryKeyMacro")
 
 /// #Index macro declaration
 ///
@@ -102,7 +101,7 @@ public macro Index<T: Persistable>(
     type: any IndexKind,
     unique: Bool = false,
     name: String? = nil
-) = #externalMacro(module: "FDBCoreMacros", type: "IndexMacro")
+) = #externalMacro(module: "FDBModelMacros", type: "IndexMacro")
 
 /// #Directory macro declaration
 ///
@@ -117,7 +116,7 @@ public macro Index<T: Persistable>(
 /// This macro validates the directory path syntax. The actual directory
 /// functionality is provided by FDBRuntime.
 @freestanding(declaration)
-public macro Directory<T>(_ elements: Any..., layer: DirectoryLayer = .recordStore) = #externalMacro(module: "FDBCoreMacros", type: "DirectoryMacro")
+public macro Directory<T>(_ elements: Any..., layer: DirectoryLayer = .recordStore) = #externalMacro(module: "FDBModelMacros", type: "DirectoryMacro")
 
 /// Directory layer type
 ///

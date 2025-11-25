@@ -1,7 +1,6 @@
 import Testing
 import Foundation
-import FDBIndexing
-@testable import FDBCore
+@testable import FDBModel
 
 @Suite("Persistable Protocol Tests")
 struct PersistableProtocolTests {
@@ -29,6 +28,15 @@ struct PersistableProtocolTests {
         var userID: Int64
         var email: String
         var name: String
+
+        subscript(dynamicMember member: String) -> (any Sendable)? {
+            switch member {
+            case "userID": return userID
+            case "email": return email
+            case "name": return name
+            default: return nil
+            }
+        }
     }
 
     @Test("Model modelName")

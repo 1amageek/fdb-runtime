@@ -1,5 +1,6 @@
 import Foundation
 import FoundationDB
+import FDBCore
 import Synchronization
 
 /// FDBContext - Type-independent transaction context

@@ -1,4 +1,4 @@
-// swift-tools-version: 6.0
+// swift-tools-version: 6.2
 // The swift-tools-version declares the minimum version of Swift required to build this package.
 
 import PackageDescription
@@ -10,17 +10,22 @@ let package = Package(
         .macOS(.v15),
     ],
     products: [
-        // FDBIndexing: Index abstraction layer (FDB-dependent, Server-only)
+        // FDBModel: Model definitions (FDB-independent, all platforms)
         .library(
-            name: "FDBIndexing",
-            targets: ["FDBIndexing"]
+            name: "FDBModel",
+            targets: ["FDBModel"]
         ),
-        // FDBCore: FDB-independent core functionality (Server-only, model definitions only)
+        // FDBCore: Core functionality (FDB-dependent, Server-only)
         .library(
             name: "FDBCore",
             targets: ["FDBCore"]
         ),
-        // FDBRuntime: FDB-dependent runtime layer (Server-only, Store implementation)
+        // FDBIndexing: Index functionality (FDB-dependent, Server-only)
+        .library(
+            name: "FDBIndexing",
+            targets: ["FDBIndexing"]
+        ),
+        // FDBRuntime: Container, Store, Context (FDB-dependent, Server-only)
         .library(
             name: "FDBRuntime",
             targets: ["FDBRuntime"]
@@ -33,78 +38,88 @@ let package = Package(
         // Swift Syntax (for macros)
         .package(url: "https://github.com/apple/swift-syntax.git", from: "600.0.0"),
 
-        // Logging (optional, for FDBRuntime)
+        // Logging (optional, for FDBCore)
         .package(url: "https://github.com/apple/swift-log.git", from: "1.6.4"),
     ],
     targets: [
-        // MARK: - FDBIndexing (Index abstraction layer, FDB-dependent, Server-only)
+        // MARK: - FDBModel (Model definitions, FDB-independent, all platforms)
 
         .target(
-            name: "FDBIndexing",
+            name: "FDBModel",
             dependencies: [
-                .product(name: "FoundationDB", package: "fdb-swift-bindings"),
+                "FDBModelMacros",
             ],
-            path: "Sources/FDBIndexing",
+            path: "Sources/FDBModel",
             swiftSettings: [
                 .swiftLanguageMode(.v6)
             ]
         ),
 
-        // MARK: - FDBCore (FDB-independent, all platforms)
-
-        .target(
-            name: "FDBCore",
-            dependencies: [
-                "FDBCoreMacros",
-                "FDBIndexing",
-            ],
-            path: "Sources/FDBCore",
-            swiftSettings: [
-                .swiftLanguageMode(.v6)
-            ]
-        ),
-
-        // MARK: - FDBCoreMacros (Macro plugin)
+        // MARK: - FDBModelMacros (Macro plugin)
 
         .macro(
-            name: "FDBCoreMacros",
+            name: "FDBModelMacros",
             dependencies: [
                 .product(name: "SwiftSyntaxMacros", package: "swift-syntax"),
                 .product(name: "SwiftCompilerPlugin", package: "swift-syntax"),
             ],
-            path: "Sources/FDBCoreMacros",
+            path: "Sources/FDBModelMacros",
             swiftSettings: [
                 .swiftLanguageMode(.v6)
             ]
         ),
 
-        // MARK: - FDBRuntime (FDB-dependent, Server-only)
+        // MARK: - FDBCore (Runtime foundation, FDB-dependent, Server-only)
+
+        .target(
+            name: "FDBCore",
+            dependencies: [
+                "FDBModel",
+                .product(name: "FoundationDB", package: "fdb-swift-bindings"),
+                .product(name: "Logging", package: "swift-log"),
+            ]
+        ),
+
+        // MARK: - FDBIndexing (Index functionality, FDB-dependent, Server-only)
+
+        .target(
+            name: "FDBIndexing",
+            dependencies: [
+                "FDBModel",
+                "FDBCore",
+                .product(name: "FoundationDB", package: "fdb-swift-bindings"),
+            ]
+        ),
+
+        // MARK: - FDBRuntime (Container, Store, Context, FDB-dependent, Server-only)
 
         .target(
             name: "FDBRuntime",
             dependencies: [
+                "FDBModel",
                 "FDBCore",
                 "FDBIndexing",
                 .product(name: "FoundationDB", package: "fdb-swift-bindings"),
                 .product(name: "Logging", package: "swift-log"),
-            ],
-            path: "Sources/FDBRuntime",
-            swiftSettings: [
-                .swiftLanguageMode(.v6)
             ]
         ),
 
         // MARK: - Tests
 
         .testTarget(
-            name: "FDBIndexingTests",
+            name: "FDBModelTests",
             dependencies: [
-                "FDBIndexing",
+                "FDBModel",
+                "FDBModelMacros",
+            ]
+        ),
+        .testTarget(
+            name: "FDBCoreTests",
+            dependencies: [
+                "FDBCore",
+                "FDBModel",
+                "FDBRuntime",
                 .product(name: "FoundationDB", package: "fdb-swift-bindings"),
-            ],
-            path: "Tests/FDBIndexingTests",
-            swiftSettings: [
-                .swiftLanguageMode(.v6)
             ],
             linkerSettings: [
                 .unsafeFlags(["-L/usr/local/lib"]),
@@ -112,15 +127,12 @@ let package = Package(
             ]
         ),
         .testTarget(
-            name: "FDBCoreTests",
+            name: "FDBIndexingTests",
             dependencies: [
-                "FDBCore",
-                "FDBCoreMacros",
                 "FDBIndexing",
-            ],
-            path: "Tests/FDBCoreTests",
-            swiftSettings: [
-                .swiftLanguageMode(.v6)
+                "FDBCore",
+                "FDBModel",
+                .product(name: "FoundationDB", package: "fdb-swift-bindings"),
             ],
             linkerSettings: [
                 .unsafeFlags(["-L/usr/local/lib"]),
@@ -131,12 +143,10 @@ let package = Package(
             name: "FDBRuntimeTests",
             dependencies: [
                 "FDBRuntime",
-                "FDBCore",
                 "FDBIndexing",
-            ],
-            path: "Tests/FDBRuntimeTests",
-            swiftSettings: [
-                .swiftLanguageMode(.v6)
+                "FDBCore",
+                "FDBModel",
+                .product(name: "FoundationDB", package: "fdb-swift-bindings"),
             ],
             linkerSettings: [
                 .unsafeFlags(["-L/usr/local/lib"]),

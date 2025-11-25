@@ -68,7 +68,7 @@ extension KeyExpression {
 
             throw DataAccessError.fieldNotFound(
                 itemType: "Unknown",
-                fieldName: "Unsupported KeyExpression type: \(type(of: self))"
+                keyPath: "Unsupported KeyExpression type: \(type(of: self))"
             )
         }
     }

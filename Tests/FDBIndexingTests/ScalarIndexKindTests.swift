@@ -3,6 +3,7 @@
 
 import Testing
 import Foundation
+import FDBModel
 @testable import FDBIndexing
 
 @Suite("ScalarIndexKind Tests")

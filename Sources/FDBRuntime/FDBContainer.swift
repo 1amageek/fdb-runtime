@@ -1,5 +1,6 @@
 import Foundation
 import FoundationDB
+import FDBModel
 import FDBCore
 import FDBIndexing
 import Synchronization

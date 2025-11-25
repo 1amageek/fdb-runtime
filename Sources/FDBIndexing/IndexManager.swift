@@ -1,6 +1,7 @@
 import Foundation
 import FoundationDB
-import FDBIndexing
+import FDBModel
+import FDBCore
 import Synchronization
 
 /// IndexManager coordinates index registration and state management

@@ -1,6 +1,6 @@
 import Foundation
 import FoundationDB
-import FDBIndexing
+import FDBCore
 import Logging
 
 /// Manages index state transitions with validation

@@ -3,6 +3,7 @@
 
 import Testing
 import Foundation
+import FDBModel
 @testable import FDBIndexing
 
 // MARK: - CountIndexKind Tests

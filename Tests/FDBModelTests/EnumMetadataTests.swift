@@ -1,6 +1,6 @@
 import Testing
 import Foundation
-@testable import FDBCore
+@testable import FDBModel
 
 @Suite("EnumMetadata Tests")
 struct EnumMetadataTests {

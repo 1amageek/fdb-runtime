@@ -126,7 +126,7 @@ public struct IndexDescriptor: Sendable {
     /// - Parameters:
     ///   - name: Index name (unique identifier)
     ///   - keyPaths: Array of indexed field names
-    ///   - kind: Index kind
+    ///   - kind: Index kind metadata
     ///   - commonOptions: Common options (default: empty)
     public init(
         name: String,

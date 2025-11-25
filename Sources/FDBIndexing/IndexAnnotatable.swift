@@ -6,6 +6,7 @@
 // index metadata for models.
 
 import Foundation
+import FDBModel
 
 /// Protocol for types that can provide index metadata.
 ///

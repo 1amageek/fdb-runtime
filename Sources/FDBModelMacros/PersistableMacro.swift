@@ -222,6 +222,26 @@ public struct PersistableMacro: MemberMacro, ExtensionMacro {
             """
         decls.append(enumMetadataDecl)
 
+        // Generate subscript for @dynamicMemberLookup
+        var subscriptCases: [String] = []
+        for fieldName in allFields {
+            subscriptCases.append("case \"\(fieldName)\": return self.\(fieldName)")
+        }
+        let subscriptBody = subscriptCases.isEmpty
+            ? "return nil"
+            : """
+            switch member {
+                    \(subscriptCases.joined(separator: "\n        "))
+                    default: return nil
+                }
+            """
+        let subscriptDecl: DeclSyntax = """
+            public subscript(dynamicMember member: String) -> (any Sendable)? {
+                \(raw: subscriptBody)
+            }
+            """
+        decls.append(subscriptDecl)
+
         return decls
     }
 

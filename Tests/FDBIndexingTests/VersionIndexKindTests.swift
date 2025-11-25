@@ -3,6 +3,8 @@
 
 import Testing
 import Foundation
+import FDBModel
+import FDBModel
 @testable import FDBIndexing
 
 @Suite("VersionIndexKind Tests")

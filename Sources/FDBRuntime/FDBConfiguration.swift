@@ -1,5 +1,6 @@
 import Foundation
 import FoundationDB
+import FDBCore
 
 /// FDB configuration (SwiftData-compatible)
 ///
