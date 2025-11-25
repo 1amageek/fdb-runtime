@@ -27,7 +27,7 @@ import FoundationDB
 /// let emailIndex = IndexDescriptor(
 ///     name: "User_email",
 ///     keyPaths: ["email"],
-///     kind: try! IndexKind(ScalarIndexKind()),
+///     kind: ScalarIndexKind(),
 ///     commonOptions: .init(unique: true)
 /// )
 ///
@@ -35,7 +35,7 @@ import FoundationDB
 /// let compositeIndex = IndexDescriptor(
 ///     name: "Product_category_price",
 ///     keyPaths: ["category", "price"],
-///     kind: try! IndexKind(ScalarIndexKind()),
+///     kind: ScalarIndexKind(),
 ///     commonOptions: .init()
 /// )
 /// ```
@@ -97,7 +97,7 @@ public struct ScalarIndexKind: IndexKind {
     ///
     /// **Example**:
     /// ```swift
-    /// let kind = try IndexKind(ScalarIndexKind())
+    /// let kind: any IndexKind = ScalarIndexKind()
     /// ```
     public init() {}
 

@@ -417,19 +417,45 @@ let schema = Schema(
 )
 ```
 
-### IndexKind Protocol Update
+### IndexKind Protocol Definition
 
 ```swift
-public protocol IndexKind: Sendable, Hashable {
+public protocol IndexKind: Sendable, Codable, Hashable {
     static var identifier: String { get }
     static var subspaceStructure: SubspaceStructure { get }
+    static func validateTypes(_ types: [Any.Type]) throws
 
-    /// Create IndexMaintainer with runtime configuration
-    func makeIndexMaintainer<Item>(
+    // NOTE: makeIndexMaintainer is NOT a protocol requirement
+    // It is implemented by concrete IndexKind types in upper layers (fdb-indexes)
+}
+```
+
+**Design Decision**: `makeIndexMaintainer` is NOT part of the protocol requirement.
+
+**Rationale**:
+- FDBIndexing contains **metadata-only** IndexKind definitions (used by @Persistable macro, schema, tests)
+- Actual IndexMaintainer implementations are in **separate packages** (fdb-indexes, third-party packages)
+- Requiring makeIndexMaintainer would create **circular dependency** (fdb-runtime → fdb-indexes → fdb-runtime)
+
+**Implementation Pattern** (in fdb-indexes or third-party packages):
+```swift
+// ScalarIndexKind definition (in fdb-runtime/FDBIndexing)
+public struct ScalarIndexKind: IndexKind {
+    public static let identifier = "scalar"
+    public static let subspaceStructure = SubspaceStructure.flat
+    public static func validateTypes(_ types: [Any.Type]) throws { ... }
+    public init() {}
+}
+
+// ScalarIndexKind.makeIndexMaintainer (in fdb-indexes/ScalarIndexLayer)
+extension ScalarIndexKind {
+    public func makeIndexMaintainer<Item: Sendable>(
         index: Index,
         subspace: Subspace,
-        configuration: AlgorithmConfiguration?  // ← Runtime algorithm config
-    ) throws -> any IndexMaintainer<Item>
+        configuration: AlgorithmConfiguration?
+    ) throws -> any IndexMaintainer<Item> {
+        return ScalarIndexMaintainer<Item>(index: index, kind: self, subspace: subspace)
+    }
 }
 ```
 

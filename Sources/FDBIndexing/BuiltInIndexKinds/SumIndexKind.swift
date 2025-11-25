@@ -28,7 +28,7 @@ import FoundationDB
 /// let salaryByDeptIndex = IndexDescriptor(
 ///     name: "Employee_salary_by_dept",
 ///     keyPaths: ["department", "salary"],
-///     kind: try! IndexKind(SumIndexKind()),
+///     kind: SumIndexKind(),
 ///     commonOptions: .init()
 /// )
 ///
@@ -36,7 +36,7 @@ import FoundationDB
 /// let salesByCategoryIndex = IndexDescriptor(
 ///     name: "Product_sales_by_category",
 ///     keyPaths: ["category", "totalSales"],
-///     kind: try! IndexKind(SumIndexKind()),
+///     kind: SumIndexKind(),
 ///     commonOptions: .init()
 /// )
 /// ```
@@ -127,7 +127,7 @@ public struct SumIndexKind: IndexKind {
     ///
     /// **Example**:
     /// ```swift
-    /// let kind = try IndexKind(SumIndexKind())
+    /// let kind: any IndexKind = SumIndexKind()
     /// ```
     public init() {}
 

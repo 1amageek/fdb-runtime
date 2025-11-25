@@ -30,7 +30,7 @@ import FoundationDB
 /// let versionIndex = IndexDescriptor(
 ///     name: "Document_version_index",
 ///     keyPaths: ["_version"],  // Special field name
-///     kind: try! IndexKind(VersionIndexKind()),
+///     kind: VersionIndexKind(),
 ///     commonOptions: .init()
 /// )
 ///
@@ -113,7 +113,7 @@ public struct VersionIndexKind: IndexKind {
     ///
     /// **Example**:
     /// ```swift
-    /// let kind = try IndexKind(VersionIndexKind())
+    /// let kind: any IndexKind = VersionIndexKind()
     /// ```
     public init() {}
 

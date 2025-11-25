@@ -29,7 +29,7 @@ import FoundationDB
 /// let maxPriceByRegionIndex = IndexDescriptor(
 ///     name: "Product_max_price_by_region",
 ///     keyPaths: ["region", "price"],
-///     kind: try! IndexKind(MaxIndexKind()),
+///     kind: MaxIndexKind(),
 ///     commonOptions: .init()
 /// )
 ///
@@ -37,7 +37,7 @@ import FoundationDB
 /// let maxSalaryByDeptIndex = IndexDescriptor(
 ///     name: "Employee_max_salary_by_dept",
 ///     keyPaths: ["department", "salary"],
-///     kind: try! IndexKind(MaxIndexKind()),
+///     kind: MaxIndexKind(),
 ///     commonOptions: .init()
 /// )
 /// ```
@@ -121,7 +121,7 @@ public struct MaxIndexKind: IndexKind {
     ///
     /// **Example**:
     /// ```swift
-    /// let kind = try IndexKind(MaxIndexKind())
+    /// let kind: any IndexKind = MaxIndexKind()
     /// ```
     public init() {}
 

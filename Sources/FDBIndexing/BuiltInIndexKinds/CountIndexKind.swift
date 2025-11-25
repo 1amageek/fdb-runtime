@@ -27,7 +27,7 @@ import FoundationDB
 /// let cityCountIndex = IndexDescriptor(
 ///     name: "User_count_by_city",
 ///     keyPaths: ["city"],
-///     kind: try! IndexKind(CountIndexKind()),
+///     kind: CountIndexKind(),
 ///     commonOptions: .init()
 /// )
 ///
@@ -35,7 +35,7 @@ import FoundationDB
 /// let deptRoleCountIndex = IndexDescriptor(
 ///     name: "Employee_count_by_dept_role",
 ///     keyPaths: ["department", "role"],
-///     kind: try! IndexKind(CountIndexKind()),
+///     kind: CountIndexKind(),
 ///     commonOptions: .init()
 /// )
 /// ```
@@ -108,7 +108,7 @@ public struct CountIndexKind: IndexKind {
     ///
     /// **Example**:
     /// ```swift
-    /// let kind = try IndexKind(CountIndexKind())
+    /// let kind: any IndexKind = CountIndexKind()
     /// ```
     public init() {}
 

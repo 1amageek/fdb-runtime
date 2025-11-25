@@ -29,7 +29,7 @@ import FoundationDB
 /// let minPriceByRegionIndex = IndexDescriptor(
 ///     name: "Product_min_price_by_region",
 ///     keyPaths: ["region", "price"],
-///     kind: try! IndexKind(MinIndexKind()),
+///     kind: MinIndexKind(),
 ///     commonOptions: .init()
 /// )
 ///
@@ -37,7 +37,7 @@ import FoundationDB
 /// let minAgeByDeptIndex = IndexDescriptor(
 ///     name: "Employee_min_age_by_dept",
 ///     keyPaths: ["department", "age"],
-///     kind: try! IndexKind(MinIndexKind()),
+///     kind: MinIndexKind(),
 ///     commonOptions: .init()
 /// )
 /// ```
@@ -121,7 +121,7 @@ public struct MinIndexKind: IndexKind {
     ///
     /// **Example**:
     /// ```swift
-    /// let kind = try IndexKind(MinIndexKind())
+    /// let kind: any IndexKind = MinIndexKind()
     /// ```
     public init() {}
 
