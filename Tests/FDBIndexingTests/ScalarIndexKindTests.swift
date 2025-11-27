@@ -55,7 +55,7 @@ struct ScalarIndexKindTests {
 
     @Test("ScalarIndexKind rejects empty fields")
     func testRejectEmptyFields() {
-        #expect(throws: IndexError.self) {
+        #expect(throws: IndexTypeValidationError.self) {
             try ScalarIndexKind.validateTypes([])
         }
     }
@@ -63,12 +63,12 @@ struct ScalarIndexKindTests {
     @Test("ScalarIndexKind rejects non-Comparable types")
     func testRejectNonComparableTypes() {
         // Array type (not Comparable)
-        #expect(throws: IndexError.self) {
+        #expect(throws: IndexTypeValidationError.self) {
             try ScalarIndexKind.validateTypes([[Int].self])
         }
 
         // Optional type (not Comparable)
-        #expect(throws: IndexError.self) {
+        #expect(throws: IndexTypeValidationError.self) {
             try ScalarIndexKind.validateTypes([Int?.self])
         }
     }

@@ -7,13 +7,18 @@ import Foundation
 struct ModelMacroTests {
 
     /// Test basic @Persistable expansion
-    @Test("Basic @Persistable with PrimaryKey")
+    @Test("Basic @Persistable generates id and metadata")
     func basicModel() {
         // Verify generated properties
         #expect(BasicUser.persistableType == "BasicUser")
-        #expect(BasicUser.primaryKeyFields == ["userID"])
-        #expect(BasicUser.allFields == ["userID", "email", "name"])
+        #expect(BasicUser.allFields.contains("id"))
+        #expect(BasicUser.allFields.contains("email"))
+        #expect(BasicUser.allFields.contains("name"))
         #expect(BasicUser.indexDescriptors.isEmpty)
+
+        // Verify auto-generated id
+        let user = BasicUser(email: "test@example.com", name: "Alice")
+        #expect(!user.id.isEmpty)
     }
 
     /// Test @Persistable with #Index
@@ -58,19 +63,27 @@ struct ModelMacroTests {
         #expect(emailIndex.name == "user_email_idx")
     }
 
-    /// Test @Persistable with composite primary key
-    @Test("@Persistable with composite primary key")
-    func modelWithCompositePrimaryKey() {
-        // Verify composite primary key
-        #expect(Order.primaryKeyFields == ["accountID", "orderID"])
-        #expect(Order.allFields == ["accountID", "orderID", "amount"])
+    /// Test @Persistable with custom type name
+    @Test("@Persistable with custom type name")
+    func modelWithCustomTypeName() {
+        // Verify custom type name
+        #expect(Member.persistableType == "User")
+    }
+
+    /// Test @Persistable with user-defined id
+    @Test("@Persistable with user-defined id")
+    func modelWithUserDefinedId() {
+        // Verify user-defined id is used (with auto-generated default)
+        let order = Order(orderID: 12345, amount: 99.99)
+        #expect(order.id > 0)  // Auto-generated timestamp-based id
+        #expect(Order.allFields.contains("id"))
     }
 
     /// Test @Persistable fieldNumber generation
     @Test("fieldNumber method generates sequential numbers")
     func fieldNumberGeneration() {
-        // Verify field numbers
-        #expect(FieldNumberUser.fieldNumber(for: "userID") == 1)
+        // Verify field numbers (id is first if auto-generated)
+        #expect(FieldNumberUser.fieldNumber(for: "id") == 1)
         #expect(FieldNumberUser.fieldNumber(for: "email") == 2)
         #expect(FieldNumberUser.fieldNumber(for: "name") == 3)
         #expect(FieldNumberUser.fieldNumber(for: "nonexistent") == nil)
@@ -95,7 +108,7 @@ struct ModelMacroTests {
     /// Test @Persistable Codable conformance
     @Test("@Persistable generates Codable conformance")
     func modelCodableConformance() throws {
-        let user = CodableUser(userID: 1, email: "test@example.com", name: "Alice")
+        let user = CodableUser(email: "test@example.com", name: "Alice")
 
         // Verify Codable works
         let encoder = JSONEncoder()
@@ -104,7 +117,7 @@ struct ModelMacroTests {
 
         let decoder = JSONDecoder()
         let decoded = try decoder.decode(CodableUser.self, from: data)
-        #expect(decoded.userID == user.userID)
+        #expect(decoded.id == user.id)
         #expect(decoded.email == user.email)
         #expect(decoded.name == user.name)
     }
@@ -113,7 +126,29 @@ struct ModelMacroTests {
     @Test("@Persistable generates Sendable conformance")
     func modelSendableConformance() {
         // This test verifies that the compiler accepts User as Sendable
-        let _: any Sendable = SendableUser(userID: 1, email: "test@example.com")
+        let _: any Sendable = SendableUser(email: "test@example.com")
+    }
+
+    /// Test @Persistable init without id parameter
+    @Test("@Persistable init does not include id parameter")
+    func initWithoutIdParameter() {
+        // Create user without specifying id
+        let user = BasicUser(email: "test@example.com", name: "Alice")
+
+        // id should be auto-generated (ULID format: 26 characters)
+        #expect(user.id.count == 26)
+        #expect(!user.id.isEmpty)
+    }
+
+    /// Test @Persistable dynamic member lookup
+    @Test("@Persistable supports dynamic member lookup")
+    func dynamicMemberLookup() {
+        let user = BasicUser(email: "test@example.com", name: "Alice")
+
+        // Access fields via dynamic member lookup
+        #expect(user[dynamicMember: "email"] as? String == "test@example.com")
+        #expect(user[dynamicMember: "name"] as? String == "Alice")
+        #expect(user[dynamicMember: "nonexistent"] == nil)
     }
 }
 
@@ -121,30 +156,23 @@ struct ModelMacroTests {
 
 @Persistable
 struct BasicUser {
-    #PrimaryKey<BasicUser>([\.userID])
-
-    var userID: Int64
     var email: String
     var name: String
 }
 
 @Persistable
 struct IndexedUser {
-    #PrimaryKey<IndexedUser>([\.userID])
     #Index<IndexedUser>([\.email], type: ScalarIndexKind(), unique: true)
 
-    var userID: Int64
     var email: String
     var name: String
 }
 
 @Persistable
 struct Product {
-    #PrimaryKey<Product>([\.productID])
     #Index<Product>([\.category], type: ScalarIndexKind())
     #Index<Product>([\.category, \.price], type: ScalarIndexKind())
 
-    var productID: Int64
     var category: String
     var price: Double
     var name: String
@@ -152,56 +180,46 @@ struct Product {
 
 @Persistable
 struct CustomNamedUser {
-    #PrimaryKey<CustomNamedUser>([\.userID])
     #Index<CustomNamedUser>([\.email], type: ScalarIndexKind(), name: "user_email_idx")
 
-    var userID: Int64
     var email: String
+}
+
+@Persistable(type: "User")
+struct Member {
+    var name: String
 }
 
 @Persistable
 struct Order {
-    #PrimaryKey<Order>([\.accountID, \.orderID])
-
-    var accountID: String
+    var id: Int64 = Int64(Date().timeIntervalSince1970 * 1000)  // User-defined id with default
     var orderID: Int64
     var amount: Double
 }
 
 @Persistable
 struct FieldNumberUser {
-    #PrimaryKey<FieldNumberUser>([\.userID])
-
-    var userID: Int64
     var email: String
     var name: String
 }
 
 @Persistable
 struct Analytics {
-    #PrimaryKey<Analytics>([\.eventID])
     #Index<Analytics>([\.category], type: ScalarIndexKind())
     #Index<Analytics>([\.category], type: CountIndexKind())
     #Index<Analytics>([\.category, \.value], type: SumIndexKind())
 
-    var eventID: Int64
     var category: String
     var value: Double
 }
 
 @Persistable
 struct CodableUser {
-    #PrimaryKey<CodableUser>([\.userID])
-
-    var userID: Int64
     var email: String
     var name: String
 }
 
 @Persistable
 struct SendableUser {
-    #PrimaryKey<SendableUser>([\.userID])
-
-    var userID: Int64
     var email: String
 }

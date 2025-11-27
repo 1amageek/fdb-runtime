@@ -41,7 +41,7 @@ import FDBCore
 ///
 ///     func scanItem(
 ///         _ item: Item,
-///         primaryKey: Tuple,
+///         id: Tuple,
 ///         transaction: any TransactionProtocol
 ///     ) async throws {
 ///         // Build index entries for this item
@@ -80,14 +80,14 @@ public protocol IndexMaintainer<Item>: Sendable {
     ///
     /// - Parameters:
     ///   - item: The item to scan
-    ///   - primaryKey: The item's primary key
+    ///   - id: The item's unique identifier
     ///   - transaction: The transaction to use
     /// - Throws: Error if index building fails
     ///
     /// **Note**: Use `DataAccess.extractField()` and `DataAccess.evaluate()` to access item fields
     func scanItem(
         _ item: Item,
-        primaryKey: Tuple,
+        id: Tuple,
         transaction: any TransactionProtocol
     ) async throws
 

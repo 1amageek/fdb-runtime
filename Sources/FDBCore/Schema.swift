@@ -89,11 +89,18 @@ public final class Schema: Sendable {
         /// Enum metadata for enum fields
         public let enumMetadata: [String: EnumMetadata]
 
+        /// The Persistable type (stored for runtime type recovery)
+        ///
+        /// This is used by FDBRuntime to create typed IndexMaintainers during migrations.
+        /// Since FDBCore is platform-independent, this stores only the metatype reference.
+        public let persistableType: any Persistable.Type
+
         /// Initialize from Persistable type
         public init(from type: any Persistable.Type) {
             self.name = type.persistableType
             self.allFields = type.allFields
             self.indexDescriptors = type.indexDescriptors
+            self.persistableType = type
 
             // Extract enum metadata
             var enumMeta: [String: EnumMetadata] = [:]
@@ -105,7 +112,11 @@ public final class Schema: Sendable {
             self.enumMetadata = enumMeta
         }
 
-        /// Manual initializer for testing
+        /// Manual initializer for testing (without concrete type)
+        ///
+        /// **Warning**: Entities created with this initializer cannot use
+        /// OnlineIndexer for index building during migrations. Use
+        /// `init(from:)` with a Persistable type for full functionality.
         public init(
             name: String,
             allFields: [String],
@@ -116,7 +127,26 @@ public final class Schema: Sendable {
             self.allFields = allFields
             self.indexDescriptors = indexDescriptors
             self.enumMetadata = enumMetadata
+            // Use a placeholder type - migrations with OnlineIndexer won't work
+            self.persistableType = _PlaceholderPersistable.self
         }
+    }
+
+    /// Placeholder Persistable type for manual Entity initialization
+    ///
+    /// This type is used when Entity is created without a concrete Persistable type.
+    /// It cannot be used for actual index building.
+    private struct _PlaceholderPersistable: Persistable {
+        static let persistableType = "_Placeholder"
+        static let allFields: [String] = []
+        static let indexDescriptors: [IndexDescriptor] = []
+
+        static func fieldNumber(for fieldName: String) -> Int? { nil }
+        static func enumMetadata(for fieldName: String) -> EnumMetadata? { nil }
+
+        var id: String = ""
+
+        subscript(dynamicMember member: String) -> (any Sendable)? { nil }
     }
 
     // MARK: - Properties
@@ -194,10 +224,18 @@ public final class Schema: Sendable {
         // Merge with manually provided descriptors
         allIndexDescriptors.append(contentsOf: indexDescriptors)
 
-        // Store index descriptors
+        // Store index descriptors with duplicate check
         self.indexDescriptors = allIndexDescriptors
         var indexDescriptorsByName: [String: IndexDescriptor] = [:]
         for descriptor in allIndexDescriptors {
+            if let existing = indexDescriptorsByName[descriptor.name] {
+                preconditionFailure(
+                    "Duplicate index name '\(descriptor.name)' detected. " +
+                    "Existing index keyPaths: \(existing.keyPaths), " +
+                    "duplicate index keyPaths: \(descriptor.keyPaths). " +
+                    "Index names must be unique across all entities in the schema."
+                )
+            }
             indexDescriptorsByName[descriptor.name] = descriptor
         }
         self.indexDescriptorsByName = indexDescriptorsByName
@@ -206,7 +244,7 @@ public final class Schema: Sendable {
         self.formerIndexes = [:]
     }
 
-    /// Test-only initializer for manual Schema construction
+    /// Initializer for manual Schema construction
     ///
     /// - Parameters:
     ///   - entities: Array of Entity objects
@@ -229,10 +267,25 @@ public final class Schema: Sendable {
         self.entities = entities
         self.entitiesByName = entitiesByName
 
-        // Store index descriptors
-        self.indexDescriptors = indexDescriptors
+        // Collect index descriptors from entities + manual descriptors
+        var allIndexDescriptors: [IndexDescriptor] = []
+        for entity in entities {
+            allIndexDescriptors.append(contentsOf: entity.indexDescriptors)
+        }
+        allIndexDescriptors.append(contentsOf: indexDescriptors)
+
+        // Store index descriptors with duplicate check
+        self.indexDescriptors = allIndexDescriptors
         var indexDescriptorsByName: [String: IndexDescriptor] = [:]
-        for descriptor in indexDescriptors {
+        for descriptor in allIndexDescriptors {
+            if let existing = indexDescriptorsByName[descriptor.name] {
+                preconditionFailure(
+                    "Duplicate index name '\(descriptor.name)' detected. " +
+                    "Existing index keyPaths: \(existing.keyPaths), " +
+                    "duplicate index keyPaths: \(descriptor.keyPaths). " +
+                    "Index names must be unique across all entities in the schema."
+                )
+            }
             indexDescriptorsByName[descriptor.name] = descriptor
         }
         self.indexDescriptorsByName = indexDescriptorsByName
@@ -357,5 +410,63 @@ public struct FormerIndex: Sendable, Hashable, Equatable {
         self.name = name
         self.addedVersion = addedVersion
         self.removedTimestamp = removedTimestamp
+    }
+}
+
+// MARK: - SchemaError
+
+/// Errors that can occur during Schema validation
+public enum SchemaError: Error, CustomStringConvertible {
+    /// Duplicate index name detected across entities
+    ///
+    /// Index names must be unique across all entities in a schema.
+    /// This error provides details about both the existing and duplicate index.
+    case duplicateIndexName(indexName: String, existingKeyPaths: [String], duplicateKeyPaths: [String])
+
+    public var description: String {
+        switch self {
+        case .duplicateIndexName(let indexName, let existingKeyPaths, let duplicateKeyPaths):
+            return "Duplicate index name '\(indexName)' detected. " +
+                   "Existing index keyPaths: \(existingKeyPaths), " +
+                   "duplicate index keyPaths: \(duplicateKeyPaths). " +
+                   "Index names must be unique across all entities in the schema."
+        }
+    }
+}
+
+// MARK: - Schema Validation
+
+extension Schema {
+    /// Validate the schema for duplicate index names
+    ///
+    /// This method checks that all index names are unique across the entire schema,
+    /// including both entity-defined indexes and manually added indexes.
+    ///
+    /// **Note**: As of the current implementation, Schema initializer already enforces
+    /// unique index names via `preconditionFailure`. This method is kept for:
+    /// 1. Explicit validation in migration contexts
+    /// 2. Programmatic error handling (throws instead of crashing)
+    ///
+    /// **Usage**:
+    /// ```swift
+    /// let schema = Schema([User.self, Order.self])
+    /// try schema.validateIndexNames()  // Throws if duplicates found
+    /// ```
+    ///
+    /// - Throws: `SchemaError.duplicateIndexName` if duplicate index names are detected
+    public func validateIndexNames() throws {
+        var seenIndexes: [String: IndexDescriptor] = [:]
+
+        // Check ALL indexDescriptors (includes both entity-defined and manual indexes)
+        for descriptor in indexDescriptors {
+            if let existing = seenIndexes[descriptor.name] {
+                throw SchemaError.duplicateIndexName(
+                    indexName: descriptor.name,
+                    existingKeyPaths: existing.keyPaths,
+                    duplicateKeyPaths: descriptor.keyPaths
+                )
+            }
+            seenIndexes[descriptor.name] = descriptor
+        }
     }
 }

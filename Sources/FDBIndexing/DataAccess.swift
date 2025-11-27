@@ -1,6 +1,7 @@
 import Foundation
 import FoundationDB
 import FDBModel
+import FDBCore
 
 /// Static utility for accessing Persistable item data
 ///
@@ -96,18 +97,18 @@ public struct DataAccess: Sendable {
         return try convertToTupleElements(value)
     }
 
-    /// Extract primary key from an item using the primary key expression
+    /// Extract id from an item using the id expression
     ///
     /// - Parameters:
     ///   - item: The item to extract from
-    ///   - primaryKeyExpression: The KeyExpression defining the primary key
-    /// - Returns: Tuple representing the primary key
+    ///   - idExpression: The KeyExpression defining the id
+    /// - Returns: Tuple representing the id
     /// - Throws: Error if extraction fails
-    public static func extractPrimaryKey<Item: Persistable>(
+    public static func extractId<Item: Persistable>(
         from item: Item,
-        using primaryKeyExpression: KeyExpression
+        using idExpression: KeyExpression
     ) throws -> Tuple {
-        let elements = try evaluate(item: item, expression: primaryKeyExpression)
+        let elements = try evaluate(item: item, expression: idExpression)
         return Tuple(elements)
     }
 
@@ -175,18 +176,18 @@ public struct DataAccess: Sendable {
     /// **Default Implementation**: Throws error (not supported)
     /// Upper layers should implement reconstruction if they support covering indexes.
     ///
-    /// **Index Key Structure**: `<indexSubspace><rootExpression fields><primaryKey fields>`
+    /// **Index Key Structure**: `<indexSubspace><rootExpression fields><id fields>`
     ///
     /// - Parameters:
     ///   - indexKey: The index key (unpacked tuple)
     ///   - indexValue: The index value (packed covering fields)
-    ///   - primaryKeyExpression: Primary key expression for field extraction
+    ///   - idExpression: ID expression for field extraction
     /// - Returns: Reconstructed item
     /// - Throws: Error indicating reconstruction is not supported
     public static func reconstruct<Item: Persistable>(
         indexKey: Tuple,
         indexValue: FDB.Bytes,
-        primaryKeyExpression: KeyExpression
+        idExpression: KeyExpression
     ) throws -> Item {
         throw DataAccessError.reconstructionNotSupported(
             itemType: Item.persistableType,
@@ -200,8 +201,25 @@ public struct DataAccess: Sendable {
     ///
     /// - Parameter value: The value to convert
     /// - Returns: Array of TupleElements
-    /// - Throws: Error if type is not convertible to TupleElement
+    /// - Throws: DataAccessError.unsupportedType if type is not convertible to TupleElement
     private static func convertToTupleElements(_ value: any Sendable) throws -> [any TupleElement] {
+        return try convertAnyToTupleElements(value)
+    }
+
+    /// Internal helper that works with Any to avoid Swift 6 Sendable casting restrictions
+    private static func convertAnyToTupleElements(_ value: Any) throws -> [any TupleElement] {
+        // Handle Optional types - nil values cannot be indexed
+        if let optional = value as? (any _OptionalProtocol) {
+            if optional._isNil {
+                throw DataAccessError.nilValueCannotBeIndexed
+            }
+            // Unwrap and recursively process the wrapped value
+            if let unwrapped = optional._unwrappedAny {
+                return try convertAnyToTupleElements(unwrapped)
+            }
+            throw DataAccessError.nilValueCannotBeIndexed
+        }
+
         // Handle common types
         switch value {
         case let stringValue as String:
@@ -216,9 +234,16 @@ public struct DataAccess: Sendable {
             return [Int64(int16Value)]
         case let int8Value as Int8:
             return [Int64(int8Value)]
+        // Unsigned integers: keep as Int64 but check for overflow
         case let uintValue as UInt:
+            guard uintValue <= UInt(Int64.max) else {
+                throw DataAccessError.integerOverflow(value: UInt64(uintValue), targetType: "Int64")
+            }
             return [Int64(uintValue)]
         case let uint64Value as UInt64:
+            guard uint64Value <= UInt64(Int64.max) else {
+                throw DataAccessError.integerOverflow(value: uint64Value, targetType: "Int64")
+            }
             return [Int64(uint64Value)]
         case let uint32Value as UInt32:
             return [Int64(uint32Value)]
@@ -243,8 +268,8 @@ public struct DataAccess: Sendable {
         case let arrayValue as [any TupleElement]:
             return arrayValue
         default:
-            // For other types, attempt to convert to String
-            return [String(describing: value)]
+            // Throw error for unsupported types instead of silently converting to string
+            throw DataAccessError.unsupportedType(actualType: String(describing: type(of: value)))
         }
     }
 }
@@ -301,6 +326,24 @@ private struct DataAccessEvaluator<Item: Persistable>: KeyExpressionVisitor {
     }
 }
 
+// MARK: - Optional Protocol Helper
+
+/// Internal protocol to detect and unwrap Optional types at runtime
+private protocol _OptionalProtocol {
+    var _isNil: Bool { get }
+    var _unwrappedAny: Any? { get }
+}
+
+extension Optional: _OptionalProtocol {
+    var _isNil: Bool { self == nil }
+    var _unwrappedAny: Any? {
+        switch self {
+        case .some(let value): return value
+        case .none: return nil
+        }
+    }
+}
+
 // MARK: - Errors
 
 /// Errors that can occur during DataAccess operations
@@ -310,6 +353,9 @@ public enum DataAccessError: Error, CustomStringConvertible {
     case rangeFieldsNotSupported(itemType: String, suggestion: String)
     case reconstructionNotSupported(itemType: String, suggestion: String)
     case typeMismatch(itemType: String, keyPath: String, expected: String, actual: String)
+    case nilValueCannotBeIndexed
+    case integerOverflow(value: UInt64, targetType: String)
+    case unsupportedType(actualType: String)
 
     public var description: String {
         switch self {
@@ -323,6 +369,12 @@ public enum DataAccessError: Error, CustomStringConvertible {
             return "Reconstruction not supported for \(itemType). \(suggestion)"
         case .typeMismatch(let itemType, let keyPath, let expected, let actual):
             return "Type mismatch for field '\(keyPath)' in \(itemType): expected \(expected), got \(actual)"
+        case .nilValueCannotBeIndexed:
+            return "Nil values cannot be indexed. Optional fields with nil values should use sparse indexes or be excluded from indexing."
+        case .integerOverflow(let value, let targetType):
+            return "Integer overflow: value \(value) exceeds maximum for \(targetType) (\(Int64.max))"
+        case .unsupportedType(let actualType):
+            return "Unsupported type '\(actualType)' for indexing. Supported types: String, Int, Int64, UInt64 (≤ Int64.max), Double, Float, Bool, UUID, Data, [UInt8], Tuple"
         }
     }
 }

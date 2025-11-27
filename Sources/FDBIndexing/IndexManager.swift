@@ -70,7 +70,13 @@ public final class IndexManager: Sendable {
 
     nonisolated(unsafe) private let database: any DatabaseProtocol
     private let subspace: Subspace
-    private let stateManager: IndexStateManager
+
+    /// IndexStateManager for managing index states
+    ///
+    /// Exposed publicly for use by OnlineIndexer during migrations.
+    /// Upper layers may also need this for custom index building workflows.
+    public let stateManager: IndexStateManager
+
     private let indexRegistry: Mutex<[String: Index]>
 
     // MARK: - Initialization

@@ -4,6 +4,8 @@
 
 This document describes the simplified, finalized architecture for fdb-runtime and fdb-indexes packages based on the design discussion.
 
+**Last Updated**: 2025-11-26
+
 ## Key Design Decisions
 
 ### 1. IndexKind is a Protocol (not a type-erased wrapper)
@@ -20,32 +22,31 @@ public struct IndexKind: Sendable, Codable {
 }
 ```
 
-**New Design** (Adopted):
+**Current Design** (Adopted):
 ```swift
-// Simple protocol approach
-public protocol IndexKind: Sendable, Hashable {
+// Simple protocol approach (in FDBModel)
+public protocol IndexKind: Sendable, Codable, Hashable {
     static var identifier: String { get }
     static var subspaceStructure: SubspaceStructure { get }
-
-    func makeIndexMaintainer<Item>(
-        index: Index,
-        subspace: Subspace
-    ) throws -> any IndexMaintainer<Item>
+    static func validateTypes(_ types: [Any.Type]) throws
 }
 ```
+
+**Note**: `makeIndexMaintainer` is NOT part of the protocol. IndexMaintainer creation is handled by the upper layers (fdb-indexes, fdb-record-layer) that implement concrete IndexMaintainer types.
 
 **Benefits**:
 - ✅ Simpler: No type erasure complexity
 - ✅ Direct: `any IndexKind` instead of wrapper
 - ✅ Extensible: Third parties implement `IndexKind` protocol
-- ✅ Type-safe: Each IndexKind creates its own IndexMaintainer
+- ✅ Decoupled: IndexKind (FDBModel) separated from IndexMaintainer (FDBIndexing)
 
 ### 2. All Persistable Types Have `var id`
 
 **Design**:
 ```swift
-public protocol Persistable: Identifiable, Sendable, Codable {
-    // Identifiable requires: var id: ID { get }
+public protocol Persistable: Sendable, Codable {
+    associatedtype ID: Sendable & Hashable & Codable
+    var id: ID { get }
 
     static var persistableType: String { get }
     static var allFields: [String] { get }
@@ -53,13 +54,18 @@ public protocol Persistable: Identifiable, Sendable, Codable {
 }
 ```
 
+**Important**: When used with FDBRuntime (server-side), the ID type is validated at runtime
+to ensure it conforms to `TupleElement` for FDB key encoding. This cannot be enforced at
+compile time because FDBModel is platform-independent (iOS/macOS clients don't need FDB types).
+
 **Usage**:
 ```swift
 @Persistable
 struct User {
-    var id: Int64  // Required by Identifiable
+    // ULID auto-generated (default)
+    var id: String = ULID().ulidString
 
-    #Index<User>([\.email], type: ScalarIndexKind())
+    #Index<User>([\.email], type: ScalarIndexKind(), unique: true)
 
     var email: String
     var name: String
@@ -67,9 +73,8 @@ struct User {
 
 @Persistable
 struct Article {
-    var id: UUID  // Auto-generated in DocumentLayer
-
-    #Index<Article>([\.content], type: FullTextIndexKind())
+    // Or use explicit Int64 ID
+    var id: Int64
 
     var content: String
 }
@@ -78,70 +83,71 @@ struct Article {
 **Key Points**:
 - ✅ All data has ID (FoundationDB requires keys)
 - ✅ Field name is always `id` (consistent)
-- ✅ ID type is flexible (Int64, UUID, String, etc.)
+- ✅ ID type must conform to `Sendable & Hashable & Codable` (compile-time)
+- ✅ ID type must conform to `TupleElement` at runtime for FDB storage
+- ✅ ULID auto-generated if not defined (sortable unique IDs)
 - ❌ No composite primary keys (use directory partitioning instead)
-- ❌ No #PrimaryKey macro (not needed)
+- ❌ No #PrimaryKey macro (removed)
 
 ### 3. Composite Keys → Directory Partitioning
 
 **Wrong Approach** (RDB thinking):
 ```swift
-// ❌ Don't do this
-#PrimaryKey<Order>([\.tenantID, \.orderID])  // Composite key
-
-// FDB key: [R]/Order/[tenantID]/[orderID]
+// ❌ Don't do this - composite keys are not supported
+// #PrimaryKey<Order>([\.tenantID, \.orderID])  // Removed
 ```
 
 **Correct Approach** (FoundationDB thinking):
 ```swift
 // ✅ Do this instead
-struct Order: Persistable {
-    var id: UUID  // Single ID
-    var tenantID: String  // Partition key (not part of primary key)
+@Persistable
+struct Order {
+    var id: String = ULID().ulidString  // Single ID
+    var tenantID: String  // Partition key (stored as field)
 
-    // Directory structure handles partitioning
-    static var directoryPath: [String] {
-        ["tenants", tenantID, "orders"]
-    }
+    // Use #Directory for partitioning
+    #Directory<Order>("tenants", Field(\.tenantID), "orders")
 }
 
-// FDB key: [tenants]/[tenantID]/[orders]/[id]
-//          ^^^^^^^^^^^^^^^^^^^^^^^^ Directory (partition)
-//                                   ^^^^ ID
+// FDB key: [tenants]/[tenantID]/[orders]/R/Order/[id]
+//          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ Directory (partition)
+//                                           ^^^^ ID
 ```
 
-### 4. Modular Index Layers (fdb-indexes package)
+### 4. Modular Index Architecture
 
 **Package Structure**:
 ```
 fdb-runtime/
-├── FDBIndexing (protocols: IndexKind, IndexMaintainer, DataAccess)
-├── FDBCore (Persistable protocol + @Persistable macro)
-└── FDBRuntime (FDBStore implementation)
+├── FDBModel (Persistable protocol, IndexKind protocol, StandardIndexKinds, ULID)
+├── FDBCore (Schema, ProtobufEncoder/Decoder)
+├── FDBIndexing (IndexMaintainer protocol, ScalarIndexMaintainer, DataAccess utilities)
+└── FDBRuntime (FDBStore, FDBContainer, FDBContext)
 
-fdb-indexes/
-├── ScalarIndexLayer (ScalarIndexKind + ScalarIndexMaintainer)
+fdb-indexes/ (separate package - planned)
 ├── VectorIndexLayer (VectorIndexKind + HNSW/IVF maintainers)
 ├── FullTextIndexLayer (FullTextIndexKind + inverted index)
-└── AggregationIndexLayer (Count/Sum/Min/Max kinds)
+└── SpatialIndexLayer (S2, Geohash, etc.)
 ```
+
+**Note**: StandardIndexKinds (Scalar, Count, Sum, Min, Max, Version) are built into FDBModel.
+ScalarIndexMaintainer is built into FDBIndexing.
 
 **Usage** (import only what you need):
 ```swift
 // Package.swift
 dependencies: [
     .package(url: "https://github.com/example/fdb-runtime", from: "1.0.0"),
-    .package(url: "https://github.com/example/fdb-indexes", from: "1.0.0"),
+    // .package(url: "https://github.com/example/fdb-indexes", from: "1.0.0"),  // For advanced indexes
 ]
 
 targets: [
     .target(
         name: "MyApp",
         dependencies: [
-            .product(name: "FDBCore", package: "fdb-runtime"),
-            .product(name: "FDBRuntime", package: "fdb-runtime"),
-            .product(name: "ScalarIndexLayer", package: "fdb-indexes"),  // ← Only import what you need
-            .product(name: "VectorIndexLayer", package: "fdb-indexes"),
+            .product(name: "FDBModel", package: "fdb-runtime"),  // Model definitions
+            .product(name: "FDBRuntime", package: "fdb-runtime"),  // Server runtime
+            // .product(name: "VectorIndexLayer", package: "fdb-indexes"),  // When needed
         ]
     )
 ]
@@ -149,20 +155,16 @@ targets: [
 
 ```swift
 // MyApp.swift
-import FDBCore
+import FDBModel
 import FDBRuntime
-import ScalarIndexLayer
-import VectorIndexLayer
 
 @Persistable
 struct Product {
     var id: Int64
 
     #Index<Product>([\.category], type: ScalarIndexKind())
-    #Index<Product>([\.embedding], type: VectorIndexKind(dimensions: 384))
 
     var category: String
-    var embedding: [Float32]
 }
 ```
 
@@ -176,28 +178,21 @@ struct Product {
     var id: Int64
 
     #Index<Product>([\.category], type: ScalarIndexKind())
-    #Index<Product>([\.embedding], type: VectorIndexKind(dimensions: 384))
 
     var category: String
-    var embedding: [Float32]
+    var name: String
 }
 
 // @Persistable macro generates:
 extension Product: Persistable {
     static var persistableType: String { "Product" }
-    static var allFields: [String] { ["id", "category", "embedding"] }
+    static var allFields: [String] { ["id", "category", "name"] }
     static var indexDescriptors: [IndexDescriptor] {
         [
             IndexDescriptor(
                 name: "Product_category",
                 keyPaths: ["category"],
                 kind: ScalarIndexKind(),  // ← Direct instance
-                commonOptions: .init()
-            ),
-            IndexDescriptor(
-                name: "Product_embedding",
-                keyPaths: ["embedding"],
-                kind: VectorIndexKind(dimensions: 384),  // ← Direct instance
                 commonOptions: .init()
             )
         ]
@@ -208,51 +203,29 @@ extension Product: Persistable {
 ### 2. Store Initialization (Runtime)
 
 ```swift
-// LayerConfiguration selects appropriate IndexMaintainer
-public func makeIndexMaintainer<Item>(
-    for index: Index,
-    subspace: Subspace
-) throws -> any IndexMaintainer<Item> {
-    // Delegate to IndexKind
-    return try index.kind.makeIndexMaintainer(index: index, subspace: subspace)
-}
+// IndexMaintainer creation is handled by upper layers, not IndexKind
+// ScalarIndexMaintainer is built into FDBIndexing
 
-// IndexKind.makeIndexMaintainer() implementation
-extension ScalarIndexKind {
-    public func makeIndexMaintainer<Item>(
-        index: Index,
-        subspace: Subspace
-    ) throws -> any IndexMaintainer<Item> {
-        return ScalarIndexMaintainer<Item>(index: index, kind: self, subspace: subspace)
-    }
-}
+let index = Index(descriptor: descriptor, itemType: "Product")
+let maintainer = ScalarIndexMaintainer<Product>(
+    index: index,
+    subspace: indexSubspace
+)
 
-extension VectorIndexKind {
-    public func makeIndexMaintainer<Item>(
-        index: Index,
-        subspace: Subspace
-    ) throws -> any IndexMaintainer<Item> {
-        switch algorithm {
-        case .hnsw(let params):
-            return HNSWIndexMaintainer<Item>(...params...)
-        case .flatScan:
-            return FlatVectorIndexMaintainer<Item>(...)
-        }
-    }
-}
+// For advanced index types (VectorIndexKind, etc.),
+// upper layers (fdb-indexes) provide the maintainer implementation
 ```
 
 ### 3. Data Save (Runtime)
 
 ```swift
-let product = Product(id: 123, category: "electronics", embedding: [...])
+let product = Product(id: 123, category: "electronics", name: "Laptop")
 
 try await store.save(product)
 
 // Internal flow:
 // 1. Save to itemSubspace: [R]/Product/[123] = data
 // 2. Update ScalarIndex: [I]/Product_category/["electronics"]/[123] = ''
-// 3. Update VectorIndex (HNSW): [I]/Product_embedding/graph/... = HNSW structure
 ```
 
 ## Third-Party Extension Example
@@ -593,44 +566,47 @@ public struct VectorIndexKind: IndexKind {
 
 | Aspect | Design Choice |
 |--------|---------------|
-| **IndexKind** | Protocol (not type-erased wrapper) |
-| **ID Management** | All types have `var id` (Identifiable) |
+| **IndexKind** | Protocol in FDBModel (not type-erased wrapper) |
+| **ID Management** | All types have `var id` with TupleElement constraint |
+| **ID Generation** | ULID auto-generated if not defined |
 | **Composite Keys** | Not supported (use directory partitioning) |
 | **#PrimaryKey macro** | Removed (not needed) |
-| **Capability Protocols** | Removed (not needed) |
-| **Modular Indexes** | Separate fdb-indexes package |
-| **Third-Party Extension** | Implement IndexKind protocol |
-| **Algorithm Configuration** | Runtime selection via IndexConfigurationBuilder |
-| **Model-Algorithm Separation** | Model defines structure, runtime selects algorithm |
+| **makeIndexMaintainer** | NOT in IndexKind protocol (handled by upper layers) |
+| **Built-in Indexes** | ScalarIndexMaintainer in FDBIndexing |
+| **Advanced Indexes** | Planned for fdb-indexes package |
+| **Third-Party Extension** | Implement IndexKind + IndexMaintainer |
+| **DataAccess** | Static utility (not a protocol) |
 
 ## Migration from Old Design
 
-### Before
+### Before (Old)
 ```swift
 @Persistable
 struct User {
-    #PrimaryKey<User>([\.userID])
+    #PrimaryKey<User>([\.userID])  // ← Removed
     #Index<User>([\.email], type: ScalarIndexKind())
 
-    var userID: Int64
+    var userID: Int64  // ← Named differently
     var email: String
 }
 ```
 
-### After
+### After (Current)
 ```swift
 @Persistable
 struct User {
-    var id: Int64  // Renamed from userID, Required by Identifiable
+    var id: Int64  // Required, named 'id'
+    // Or: var id: String = ULID().ulidString  // Auto-generated
 
-    #Index<User>([\.email], type: ScalarIndexKind())
+    #Index<User>([\.email], type: ScalarIndexKind(), unique: true)
 
     var email: String
 }
 ```
 
 ### Key Changes
-1. ✅ Rename primary key field to `id`
-2. ❌ Remove `#PrimaryKey` macro
-3. ✅ Import specific IndexLayers from fdb-indexes
-4. ✅ Use `any IndexKind` directly (no wrapper)
+1. ✅ Primary key field must be named `id`
+2. ✅ ID type must conform to `TupleElement` (String, Int64, UUID, etc.)
+3. ❌ Remove `#PrimaryKey` macro (no longer exists)
+4. ✅ Use ULID for auto-generated sortable IDs
+5. ✅ Import `FDBModel` for model definitions

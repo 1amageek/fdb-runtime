@@ -8,6 +8,10 @@ let package = Package(
     name: "fdb-runtime",
     platforms: [
         .macOS(.v15),
+        .iOS(.v17),
+        .tvOS(.v17),
+        .watchOS(.v10),
+        .visionOS(.v1),
     ],
     products: [
         // FDBModel: Model definitions (FDB-independent, all platforms)
@@ -40,6 +44,9 @@ let package = Package(
 
         // Logging (optional, for FDBCore)
         .package(url: "https://github.com/apple/swift-log.git", from: "1.6.4"),
+
+        // Metrics (for observability)
+        .package(url: "https://github.com/apple/swift-metrics.git", from: "2.5.0"),
     ],
     targets: [
         // MARK: - FDBModel (Model definitions, FDB-independent, all platforms)
@@ -69,14 +76,12 @@ let package = Package(
             ]
         ),
 
-        // MARK: - FDBCore (Runtime foundation, FDB-dependent, Server-only)
+        // MARK: - FDBCore (Schema and Serialization, FDB-independent, all platforms)
 
         .target(
             name: "FDBCore",
             dependencies: [
                 "FDBModel",
-                .product(name: "FoundationDB", package: "fdb-swift-bindings"),
-                .product(name: "Logging", package: "swift-log"),
             ]
         ),
 
@@ -88,6 +93,7 @@ let package = Package(
                 "FDBModel",
                 "FDBCore",
                 .product(name: "FoundationDB", package: "fdb-swift-bindings"),
+                .product(name: "Metrics", package: "swift-metrics"),
             ]
         ),
 
@@ -101,6 +107,7 @@ let package = Package(
                 "FDBIndexing",
                 .product(name: "FoundationDB", package: "fdb-swift-bindings"),
                 .product(name: "Logging", package: "swift-log"),
+                .product(name: "Metrics", package: "swift-metrics"),
             ]
         ),
 
@@ -130,6 +137,7 @@ let package = Package(
             name: "FDBIndexingTests",
             dependencies: [
                 "FDBIndexing",
+                "FDBRuntime",
                 "FDBCore",
                 "FDBModel",
                 .product(name: "FoundationDB", package: "fdb-swift-bindings"),

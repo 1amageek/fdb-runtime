@@ -2,6 +2,7 @@ import Foundation
 import FoundationDB
 import FDBModel
 import FDBCore
+import Metrics
 
 /// Online index builder for batch index construction
 ///
@@ -76,6 +77,20 @@ public final class OnlineIndexer<Item: Persistable>: Sendable {
 
     // Progress tracking
     private let progressKey: FDB.Bytes
+
+    // MARK: - Metrics
+
+    /// Counter for total batches processed
+    private let batchCounter: Counter
+
+    /// Timer for batch processing duration
+    private let batchTimer: Timer
+
+    /// Gauge for current progress (0.0 - 1.0)
+    private let progressGauge: Gauge
+
+    /// Counter for items processed
+    private let itemsProcessedCounter: Counter
 
     // MARK: - Initialization
 
@@ -212,13 +227,13 @@ public final class OnlineIndexer<Item: Persistable>: Sendable {
                     // Deserialize item using DataAccess static method
                     let item: Item = try DataAccess.deserialize(value)
 
-                    // Extract primary key
-                    let primaryKey = try itemTypeSubspace.unpack(key)
+                    // Extract id
+                    let id = try itemTypeSubspace.unpack(key)
 
                     // Call IndexMaintainer to build index entry
                     try await indexMaintainer.scanItem(
                         item,
-                        primaryKey: primaryKey,
+                        id: id,
                         transaction: transaction
                     )
                 }

@@ -1,15 +1,15 @@
 # FDBRuntime アーキテクチャ設計
 
-**Last Updated**: 2025-11-22
+**Last Updated**: 2025-11-26
 
 ## 概要
 
-FDBRuntime は、FoundationDB 上で複数のデータモデル層をサポートするための抽象基盤層です。型非依存の共通ストア（FDBStore）とプロトコル定義（IndexMaintainer, DataAccess）を提供し、各上位レイヤーで具体的な実装を行います。
+FDBRuntime は、FoundationDB 上で複数のデータモデル層をサポートするための抽象基盤層です。型非依存の共通ストア（FDBStore）、IndexMaintainerプロトコル、DataAccess静的ユーティリティを提供し、各上位レイヤーで具体的な実装を行います。
 
 ## 設計目標
 
 1. **単一ストアの共通使用**: すべてのデータモデル層で FDBStore を共通使用（型非依存）
-2. **プロトコル層**: FDBRuntime はインターフェース定義のみ、実装は各上位レイヤー
+2. **プロトコル層**: IndexMaintainerはプロトコル、DataAccessは静的ユーティリティ
 3. **複数データモデル**: Record、Document、Vector、Graph など、異なるデータモデルを統一基盤でサポート
 4. **責任分離**: メタデータ、コア、抽象基盤、データモデル層の明確な分離
 5. **拡張性**: 新しいデータモデル層を追加可能なプロトコルベース設計
@@ -18,52 +18,59 @@ FDBRuntime は、FoundationDB 上で複数のデータモデル層をサポー�
 
 ```
 ┌─────────────────────────────────────────────────────────┐
-│                   FDBIndexing                            │
-│  役割: インデックスメタデータ定義（プロトコル + 組み込み型）│
-│  依存: FoundationDB (fdb-swift-bindings)                 │
-│  プラットフォーム: macOS, Linux (Server専用)               │
-│                                                          │
-│  ✅ IndexKind protocol                                   │
-│  ✅ IndexDescriptor                                      │
-│  ✅ LayerConfiguration protocol                         │
-│  ✅ DataAccess<Item> protocol                           │
-│  ✅ IndexMaintainer<Item> protocol                      │
-│  ✅ Index, KeyExpression                                │
-└────────────┬────────────────────────────────────────────┘
-             │
-             ▼
-┌─────────────────────────────────────────────────────────┐
-│              fdb-runtime/FDBCore                         │
-│  役割: FDB非依存のコア機能 (Server-Client共通)             │
-│  依存: Swift stdlib + Foundation + FDBIndexing (metadata)│
+│                     FDBModel                             │
+│  役割: モデル定義・メタデータ (FDB非依存、全プラットフォーム)│
+│  依存: Swift stdlib + Foundation                         │
 │  プラットフォーム: iOS, macOS, Linux (全プラットフォーム)    │
 │                                                          │
-│  ✅ Persistableプロトコル (FDB非依存)                     │
-│  ✅ @Persistableマクロ (FDBCoreMacros)                   │
-│  ✅ #PrimaryKey, #Index, #Directory マクロ                │
-│  ✅ EnumMetadata                                         │
-│  ✅ Codable準拠                                          │
+│  ✅ Persistable プロトコル                               │
+│  ✅ @Persistable マクロ (FDBModelMacros)                 │
+│  ✅ #Index, #Directory マクロ                            │
+│  ✅ IndexKind protocol + StandardIndexKinds             │
+│     (Scalar, Count, Sum, Min, Max, Version)             │
+│  ✅ IndexDescriptor, CommonIndexOptions                 │
+│  ✅ TypeValidation ヘルパー                              │
+│  ✅ ULID (自動生成ID)                                   │
+│  ✅ EnumMetadata                                        │
 └────────────┬────────────────────────────────────────────┘
              │
              ▼
 ┌─────────────────────────────────────────────────────────┐
-│             fdb-runtime/FDBRuntime                       │
-│  役割: 抽象基盤層（プロトコル定義 + 共通実装）              │
-│  依存: FDBCore + FDBIndexing + FoundationDB              │
+│                      FDBCore                             │
+│  役割: スキーマ・シリアライゼーション (FDB非依存)          │
+│  依存: FDBModel                                          │
+│  プラットフォーム: iOS, macOS, Linux (全プラットフォーム)    │
+│                                                          │
+│  ✅ Schema (エンティティ定義、バージョニング)              │
+│  ✅ ProtobufEncoder / ProtobufDecoder                   │
+└────────────┬────────────────────────────────────────────┘
+             │
+             ▼
+┌─────────────────────────────────────────────────────────┐
+│                    FDBIndexing                           │
+│  役割: インデックス抽象化層 (FDB依存、Server専用)         │
+│  依存: FDBModel + FDBCore + FoundationDB                │
 │  プラットフォーム: macOS, Linux (Server専用)               │
 │                                                          │
-│  【共通実装】                                             │
+│  ✅ IndexMaintainer<Item> プロトコル                     │
+│  ✅ ScalarIndexMaintainer 実装                          │
+│  ✅ DataAccess 静的ユーティリティ (プロトコルではない)     │
+│  ✅ KeyExpression, KeyExpressionVisitor                 │
+│  ✅ Index, IndexManager, IndexStateManager              │
+│  ✅ OnlineIndexer                                       │
+└────────────┬────────────────────────────────────────────┘
+             │
+             ▼
+┌─────────────────────────────────────────────────────────┐
+│                    FDBRuntime                            │
+│  役割: ストア・コンテナ (FDB依存、Server専用)             │
+│  依存: FDBModel + FDBCore + FDBIndexing + FoundationDB  │
+│  プラットフォーム: macOS, Linux (Server専用)               │
+│                                                          │
 │  ✅ FDBStore - 型非依存ストア（全レイヤーで共通使用）       │
-│  ✅ FDBContainer - コンテナ管理                          │
-│  ✅ FDBContext - 変更追跡                                │
-│  ✅ IndexManager - Index登録・管理システム                │
-│                                                          │
-│  【プロトコル実装】                                       │
-│  ✅ IndexMaintainer<Item> protocol (in FDBIndexing)      │
-│  ✅ DataAccess<Item> protocol (in FDBIndexing)          │
-│                                                          │
-│  【ビルトインIndexKind】                                  │
-│  ✅ ScalarIndexKind, CountIndexKind, SumIndexKind, etc.  │
+│  ✅ FDBContainer - スキーマ管理、ストアライフサイクル      │
+│  ✅ FDBContext - 変更追跡、バッチ操作                    │
+│  ✅ IDValidation - ID型検証                             │
 └────────────┬────────────────────────────────────────────┘
              │ 各データモデル層で実装
              ├─────────────────┬──────────────┬───────────┐
@@ -170,48 +177,67 @@ public struct RecordStore<Record: Persistable> {
 }
 ```
 
-### 決定2: FDBIndexing はプロトコル層（FoundationDB依存）
+### 決定2: FDBIndexing のプロトコルと静的ユーティリティ
 
 **理由**:
-- IndexMaintainer と DataAccess のプロトコル定義を FDBIndexing に配置
-- これらのプロトコルは FoundationDB 型（Tuple, Subspace, TransactionProtocol）を使用
-- 具体的な実装は各上位レイヤーに配置
-- 各データモデル層が独自の実装を提供可能
+- IndexMaintainer はプロトコルとして FDBIndexing に配置（各レイヤーが実装）
+- DataAccess は静的ユーティリティとして FDBIndexing に配置（全 Persistable 型で共通）
+- ScalarIndexMaintainer は組み込み実装として提供
 
 **利点**:
-- 拡張性の向上
-- 責任の明確化
-- 新しいデータモデル層の追加が容易
+- IndexMaintainer: 各データモデル層が独自のインデックス維持ロジックを実装可能
+- DataAccess: Persistable の `@dynamicMemberLookup` を活用した統一的なフィールドアクセス
+- ScalarIndexMaintainer: VALUE インデックスの標準実装を提供
 
-**プロトコル定義**:
+**定義**:
 ```swift
-// FDBIndexing: プロトコル定義
+// FDBIndexing: IndexMaintainer プロトコル
 public protocol IndexMaintainer<Item>: Sendable {
-    associatedtype Item: Sendable
+    associatedtype Item: Persistable
 
     func updateIndex(
         oldItem: Item?,
         newItem: Item?,
-        dataAccess: any DataAccess<Item>,
         transaction: any TransactionProtocol
     ) async throws
 
     func scanItem(
         _ item: Item,
-        primaryKey: Tuple,
-        dataAccess: any DataAccess<Item>,
+        id: Tuple,
         transaction: any TransactionProtocol
     ) async throws
+
+    // オプション: カスタムバルクビルド戦略
+    var customBuildStrategy: (any IndexBuildStrategy<Item>)? { get }
 }
 
-public protocol DataAccess<Item>: Sendable {
-    associatedtype Item: Sendable
+// FDBIndexing: DataAccess 静的ユーティリティ (プロトコルではない)
+public struct DataAccess: Sendable {
+    // プライベートinit - すべてのメソッドは静的
 
-    func itemType(for item: Item) -> String
-    func evaluate(item: Item, expression: KeyExpression) throws -> [any TupleElement]
-    func extractField(from item: Item, fieldName: String) throws -> [any TupleElement]
-    func serialize(_ item: Item) throws -> FDB.Bytes
-    func deserialize(_ bytes: FDB.Bytes) throws -> Item
+    /// KeyExpression を評価してフィールド値を抽出
+    public static func evaluate<Item: Persistable>(
+        item: Item,
+        expression: KeyExpression
+    ) throws -> [any TupleElement]
+
+    /// Persistable の subscript を使用して単一フィールドを抽出
+    public static func extractField<Item: Persistable>(
+        from item: Item,
+        keyPath: String
+    ) throws -> [any TupleElement]
+
+    /// id 式を使用して ID を抽出
+    public static func extractId<Item: Persistable>(
+        from item: Item,
+        using idExpression: KeyExpression
+    ) throws -> Tuple
+
+    /// ProtobufEncoder を使用してシリアライズ
+    public static func serialize<Item: Persistable>(_ item: Item) throws -> FDB.Bytes
+
+    /// ProtobufDecoder を使用してデシリアライズ
+    public static func deserialize<Item: Persistable>(_ bytes: FDB.Bytes) throws -> Item
 }
 ```
 
@@ -318,87 +344,80 @@ func load(primaryKey: any TupleElement) async throws -> Record?
 
 ### 新しいデータモデル層の追加
 
-1. **FDBStore 拡張**: 型安全なAPIを追加
+1. **型安全なラッパーストアの作成**: FDBStore を内部で使用
    ```swift
-   extension FDBStore {
-       func saveDocument(_ doc: Document, ...) async throws { ... }
-   }
-   ```
+   public struct DocumentStore {
+       private let store: FDBStore
+       private let database: any DatabaseProtocol
 
-2. **DataAccess 実装**: データアクセスロジックを提供
-   ```swift
-   struct DocumentDataAccess: DataAccess {
-       typealias Item = Document
-
-       func itemType(for item: Document) -> String {
-           return item.collection
-       }
-
-       func extractField(from item: Document, fieldName: String) throws -> [any TupleElement] {
-           // JSONパス抽出ロジック
-       }
-
-       func serialize(_ item: Document) throws -> FDB.Bytes {
-           return try JSONEncoder().encode(item)
-       }
-
-       func deserialize(_ bytes: FDB.Bytes) throws -> Document {
-           return try JSONDecoder().decode(Document.self, from: Data(bytes))
+       public func save(_ doc: Document) async throws {
+           let data = try DataAccess.serialize(doc)
+           let id = Tuple(doc.id)
+           try await database.withTransaction { transaction in
+               try store.save(
+                   data: Data(data),
+                   for: Document.persistableType,
+                   id: id,
+                   transaction: transaction
+               )
+           }
        }
    }
    ```
 
-3. **IndexMaintainer 実装**: インデックス維持ロジックを提供
+2. **IndexMaintainer 実装**: インデックス維持ロジックを提供
    ```swift
-   struct DocumentIndexMaintainer: IndexMaintainer {
-       typealias Item = Document
+   struct DocumentIndexMaintainer<Item: Persistable>: IndexMaintainer {
+       let index: Index
+       let subspace: Subspace
 
        func updateIndex(
-           oldItem: Document?,
-           newItem: Document?,
-           dataAccess: any DataAccess<Document>,
+           oldItem: Item?,
+           newItem: Item?,
            transaction: any TransactionProtocol
        ) async throws {
-           // インデックス更新ロジック
+           // DataAccess静的メソッドを使用
+           if let old = oldItem {
+               let oldValues = try DataAccess.evaluate(item: old, expression: index.rootExpression)
+               // 古いエントリを削除
+           }
+           if let new = newItem {
+               let newValues = try DataAccess.evaluate(item: new, expression: index.rootExpression)
+               // 新しいエントリを追加
+           }
        }
 
        func scanItem(
-           _ item: Document,
-           primaryKey: Tuple,
-           dataAccess: any DataAccess<Document>,
+           _ item: Item,
+           id: Tuple,
            transaction: any TransactionProtocol
        ) async throws {
+           let values = try DataAccess.evaluate(item: item, expression: index.rootExpression)
            // バッチインデックス構築ロジック
        }
+
+       var customBuildStrategy: (any IndexBuildStrategy<Item>)? { nil }
    }
    ```
 
-4. **LayerConfiguration 実装**: レイヤー全体の設定を提供
+3. **カスタム IndexKind の追加** (オプション):
    ```swift
-   struct DocumentLayerConfiguration: LayerConfiguration {
-       var itemTypes: Set<String> {
-           return Set(schema.collections.map(\.name))
+   // FDBModel を拡張して新しい IndexKind を追加
+   public struct FullTextIndexKind: IndexKind {
+       public static let identifier = "fulltext"
+       public static let subspaceStructure = SubspaceStructure.hierarchical
+
+       public let analyzer: String
+
+       public init(analyzer: String = "standard") {
+           self.analyzer = analyzer
        }
 
-       func makeDataAccess<Item>(for itemType: String) throws -> any DataAccess<Item> {
-           guard let collection = schema.collection(named: itemType) else {
-               throw ConfigurationError.unsupportedItemType(itemType)
-           }
-           return DocumentDataAccess() as! any DataAccess<Item>
-       }
-
-       func makeIndexMaintainer<Item>(
-           for index: Index,
-           itemType: String,
-           subspace: Subspace
-       ) throws -> any IndexMaintainer<Item> {
-           switch index.kind.identifier {
-           case "scalar":
-               return DocumentScalarIndexMaintainer(index: index, subspace: subspace) as! any IndexMaintainer<Item>
-           case "fulltext":
-               return FullTextIndexMaintainer(index: index, subspace: subspace) as! any IndexMaintainer<Item>
-           default:
-               throw ConfigurationError.unsupportedIndexKind(index.kind.identifier)
+       public static func validateTypes(_ types: [Any.Type]) throws {
+           for type in types {
+               guard type == String.self else {
+                   throw IndexTypeValidationError.unsupportedType(...)
+               }
            }
        }
    }
@@ -412,18 +431,19 @@ func load(primaryKey: any TupleElement) async throws -> Record?
 
 **実装内容**:
 - RecordStore<Record: Persistable> - FDBStore の型安全なラッパー
-- DataAccess<Record: Persistable> の実装
-- IndexMaintainer 実装群（ValueIndexMaintainer, CountIndexMaintainer, etc.）
+- DataAccess 静的メソッドの使用（フィールド抽出、シリアライゼーション）
+- IndexMaintainer 実装群（ScalarIndexMaintainer, CountIndexMaintainer, etc.）
 - QueryPlanner - クエリプラン最適化
 
 **使用例**:
 ```swift
 @Persistable
 struct User {
-    #PrimaryKey<User>([\.userID])
-    #Index<User>([\.email], type: ScalarIndexKind())
+    // id は自動生成 (ULID) または明示的に定義
+    var id: String = ULID().ulidString
 
-    var userID: Int64
+    #Index<User>([\.email], type: ScalarIndexKind(), unique: true)
+
     var email: String
     var name: String
 }
@@ -456,7 +476,7 @@ try await documentStore.insert(document, into: "users")
 
 **想定される実装**:
 - 高次元ベクトル埋め込み
-- HNSW/IVF インデックス
+- HNSW/IVF インデックス (fdb-indexes パッケージで提供予定)
 - 類似度検索（cosine, L2, inner product）
 - バッチベクトル操作
 
@@ -464,17 +484,12 @@ try await documentStore.insert(document, into: "users")
 ```swift
 @Persistable
 struct Product {
-    #PrimaryKey<Product>([\.productID])
-    #Index<Product>(
-        [\.embedding],
-        type: VectorIndexKind(
-            dimensions: 384,
-            metric: .cosine,
-            algorithm: .hnsw(HNSWParameters(m: 16, efConstruction: 200))
-        )
-    )
+    var id: Int64  // 明示的な Int64 ID
 
-    var productID: Int64
+    // Note: VectorIndexKind は fdb-indexes パッケージで提供予定
+    #Index<Product>([\.embedding], type: VectorIndexKind(dimensions: 384))
+
+    var name: String
     var embedding: [Float32]
 }
 
@@ -494,19 +509,19 @@ let similar = try await vectorStore.search(query: embedding, k: 10)
 ```swift
 @Persistable
 struct Node {
-    #PrimaryKey<Node>([\.nodeID])
-    var nodeID: String
+    var id: String = ULID().ulidString
+
     var label: String
     var properties: [String: PropertyValue]
 }
 
 @Persistable
 struct Edge {
-    #PrimaryKey<Edge>([\.edgeID])
+    var id: String = ULID().ulidString
+
     #Index<Edge>([\.fromNodeID, \.label], type: ScalarIndexKind())
     #Index<Edge>([\.toNodeID, \.label], type: ScalarIndexKind())
 
-    var edgeID: String
     var fromNodeID: String
     var toNodeID: String
     var label: String
@@ -543,23 +558,22 @@ FDBStoreは2つのサブスペースを使用してデータを整理します�
 
 ## まとめ
 
-FDBRuntime は、複数のデータモデル層を統一基盤でサポートするための抽象基盤層です。型非依存の FDBStore とプロトコル定義により、柔軟で拡張性の高いアーキテクチャを実現しています。
+FDBRuntime は、複数のデータモデル層を統一基盤でサポートするための抽象基盤層です。型非依存の FDBStore、IndexMaintainerプロトコル、DataAccess静的ユーティリティにより、柔軟で拡張性の高いアーキテクチャを実現しています。
 
 **キーポイント**:
-- ✅ **FDBStore は全レイヤーで共通使用**（RecordStore, DocumentStore などは作らない）
-- ✅ **FDBIndexing はプロトコル層**（実装は各上位レイヤー）
+- ✅ **FDBStore は全レイヤーで共通使用**（RecordStore, DocumentStore などはラッパー）
+- ✅ **4層モジュール構造**: FDBModel → FDBCore → FDBIndexing → FDBRuntime
 - ✅ **複数データモデル**（Record, Document, Vector, Graph）をサポート
 - ✅ **明確な責任分離**とレイヤー構造
 - ✅ **拡張性の高い設計**（新しいデータモデル層を追加可能）
 - ✅ **用語の一貫性**（FDBRuntime層では "item"、上位レイヤーでは "record/document/vector" など）
+- ✅ **プラットフォーム分離**: FDBModel/FDBCore は全プラットフォーム、FDBIndexing/FDBRuntime はサーバー専用
 
-**プロトコル実装のポイント**:
-1. **DataAccess<Item>**: アイテムのフィールドアクセス・シリアライゼーション
-2. **IndexMaintainer<Item>**: インデックス更新ロジック（`updateIndex`, `scanItem`）
-3. **LayerConfiguration**: レイヤー全体の設定とファクトリメソッド
-
-詳細な実装ガイドは [Layer Implementation Guide](LAYER_IMPLEMENTATION_GUIDE.md) を参照してください。
+**実装のポイント**:
+1. **DataAccess 静的メソッド**: 全 Persistable 型で共通のフィールドアクセス・シリアライゼーション
+2. **IndexMaintainer プロトコル**: インデックス更新ロジック（`updateIndex`, `scanItem`）
+3. **ScalarIndexMaintainer**: VALUE インデックスの組み込み実装
 
 ---
 
-**Last Updated**: 2025-11-22
+**Last Updated**: 2025-11-27

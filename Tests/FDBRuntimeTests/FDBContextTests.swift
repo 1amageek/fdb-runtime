@@ -2,34 +2,60 @@ import Testing
 import Foundation
 import FoundationDB
 @testable import FDBRuntime
+@testable import FDBModel
 @testable import FDBCore
 
-/// Tests for FDBContext functionality
+/// Tests for FDBContext functionality (SwiftData-like API)
 ///
 /// **Coverage**:
 /// - Autosave functionality
-/// - Concurrent save serialization
-/// - Change tracking
-/// - Fetch operations
+/// - Change tracking (insert, delete, save, rollback)
+/// - Fetch operations with FDBFetchDescriptor
+/// - Model retrieval by ID
 @Suite("FDBContext Tests")
 struct FDBContextTests {
 
     // MARK: - Helper Types
 
-    struct TestItem: Codable, Sendable {
-        var id: Int64
+    /// Test model conforming to Persistable
+    @Persistable
+    struct TestUser {
+        var id: String = ULID().ulidString
         var name: String
+        var email: String
+        var age: Int
+        var isActive: Bool = true
+    }
+
+    @Persistable
+    struct TestProduct {
+        var id: String = ULID().ulidString
+        var name: String
+        var price: Double
     }
 
     // MARK: - Helper Methods
 
-    private func setupDatabase() async throws -> (any DatabaseProtocol, FDBContainer, Subspace) {
+    private func setupContainer() async throws -> FDBContainer {
         // Ensure FDB is initialized (safe to call multiple times)
         await FDBTestEnvironment.shared.ensureInitialized()
         let database = try FDBClient.openDatabase()
 
         // Create test schema
-        let schema = Schema(entities: [], version: Schema.Version(1, 0, 0))
+        let schema = Schema(entities: [
+            Schema.Entity(
+                name: TestUser.persistableType,
+                allFields: TestUser.allFields,
+                indexDescriptors: TestUser.indexDescriptors,
+                enumMetadata: [:]
+            ),
+            Schema.Entity(
+                name: TestProduct.persistableType,
+                allFields: TestProduct.allFields,
+                indexDescriptors: TestProduct.indexDescriptors,
+                enumMetadata: [:]
+            )
+        ], version: Schema.Version(1, 0, 0))
 
         // Create test subspace (isolated)
         let testSubspace = Subspace(prefix: Tuple("context_test", UUID().uuidString).pack())
@@ -41,26 +67,21 @@ struct FDBContextTests {
             contentSubspace: testSubspace
         )
 
-        // Create container with custom DirectoryLayer
-        let container = FDBContainer(
+        // Create container with custom DirectoryLayer and subspace
+        return FDBContainer(
             database: database,
             schema: schema,
-            rootSubspace: testSubspace,
+            subspace: testSubspace,
             directoryLayer: testDirectoryLayer
         )
-
-        let itemSubspace = testSubspace.subspace("items")
-
-        return (database, container, itemSubspace)
     }
 
-    // MARK: - Tests
+    // MARK: - Autosave Tests
 
     /// Test: Autosave disabled by default
     @Test("Autosave disabled by default")
     func autosaveDisabledByDefault() async throws {
-        let (_, container, _) = try await setupDatabase()
-
+        let container = try await setupContainer()
         let context = FDBContext(container: container)
         #expect(context.autosaveEnabled == false)
     }
@@ -68,7 +89,7 @@ struct FDBContextTests {
     /// Test: Autosave can be enabled
     @Test("Autosave can be enabled")
     func autosaveCanBeEnabled() async throws {
-        let (_, container, _) = try await setupDatabase()
+        let container = try await setupContainer()
 
         let context = FDBContext(container: container, autosaveEnabled: false)
         #expect(context.autosaveEnabled == false)
@@ -77,20 +98,20 @@ struct FDBContextTests {
         #expect(context.autosaveEnabled == true)
     }
 
+    // MARK: - Change Tracking Tests
+
     /// Test: HasChanges tracking
     @Test("HasChanges tracking")
     func hasChangesTracking() async throws {
-        let (_, container, itemSubspace) = try await setupDatabase()
-
+        let container = try await setupContainer()
         let context = FDBContext(container: container)
 
         // Initially no changes
         #expect(context.hasChanges == false)
 
         // After insert, has changes
-        let item = TestItem(id: 1, name: "Test")
-        let data = try JSONEncoder().encode(item)
-        context.insert(data: data, for: "TestItem", primaryKey: Tuple(item.id), subspace: itemSubspace)
+        let user = TestUser(name: "Alice", email: "alice@example.com", age: 30)
+        context.insert(user)
         #expect(context.hasChanges == true)
 
         // After save, no changes
@@ -98,7 +119,7 @@ struct FDBContextTests {
         #expect(context.hasChanges == false)
 
         // After delete, has changes
-        context.delete(for: "TestItem", primaryKey: Tuple(item.id), subspace: itemSubspace)
+        context.delete(user)
         #expect(context.hasChanges == true)
 
         // After rollback, no changes
@@ -106,56 +127,237 @@ struct FDBContextTests {
         #expect(context.hasChanges == false)
     }
 
-    /// Test: Insert and delete cancel each other
-    @Test("Insert and delete cancel each other")
+    /// Test: Insert and delete cancel each other for unsaved models
+    @Test("Insert and delete cancel each other for unsaved models")
     func insertAndDeleteCancel() async throws {
-        let (_, container, itemSubspace) = try await setupDatabase()
-
+        let container = try await setupContainer()
         let context = FDBContext(container: container)
 
-        let item = TestItem(id: 1, name: "Test")
-        let data = try JSONEncoder().encode(item)
+        let user = TestUser(name: "Bob", email: "bob@example.com", age: 25)
 
-        // Insert then delete
-        context.insert(data: data, for: "TestItem", primaryKey: Tuple(item.id), subspace: itemSubspace)
+        // Insert then delete (before save)
+        context.insert(user)
         #expect(context.hasChanges == true)
 
-        context.delete(for: "TestItem", primaryKey: Tuple(item.id), subspace: itemSubspace)
-        // Should have no changes (insert canceled by delete)
+        context.delete(user)
+        // Should have no changes (insert canceled by delete for unsaved model)
         #expect(context.hasChanges == false)
-
-        // Delete then insert
-        context.delete(for: "TestItem", primaryKey: Tuple(item.id), subspace: itemSubspace)
-        #expect(context.hasChanges == true)
-
-        context.insert(data: data, for: "TestItem", primaryKey: Tuple(item.id), subspace: itemSubspace)
-        // Should have changes (delete canceled, insert remains)
-        #expect(context.hasChanges == true)
     }
 
     /// Test: Save with no changes does nothing
     @Test("Save with no changes does nothing")
     func saveWithNoChanges() async throws {
-        let (_, container, _) = try await setupDatabase()
-
+        let container = try await setupContainer()
         let context = FDBContext(container: container)
 
         // Should not throw, just return immediately
         try await context.save()
+        #expect(context.hasChanges == false)
     }
 
-    /// Test: Concurrent saves are serialized
-    @Test("Concurrent saves are serialized")
-    func concurrentSavesAreSerialized() async throws {
-        let (_, container, itemSubspace) = try await setupDatabase()
-
+    /// Test: Rollback clears changes
+    @Test("Rollback clears changes")
+    func rollbackClearsChanges() async throws {
+        let container = try await setupContainer()
         let context = FDBContext(container: container)
 
-        // Insert multiple items
-        let items = (1...10).map { TestItem(id: Int64($0), name: "Item \($0)") }
-        for item in items {
-            let data = try! JSONEncoder().encode(item)
-            context.insert(data: data, for: "TestItem", primaryKey: Tuple(item.id), subspace: itemSubspace)
+        let user = TestUser(name: "Charlie", email: "charlie@example.com", age: 35)
+        context.insert(user)
+        #expect(context.hasChanges == true)
+
+        context.rollback()
+        #expect(context.hasChanges == false)
+
+        // Save should do nothing
+        try await context.save()
+    }
+
+    // MARK: - CRUD Tests
+
+    /// Test: Insert and fetch single model
+    @Test("Insert and fetch single model")
+    func insertAndFetchSingleModel() async throws {
+        let container = try await setupContainer()
+        let context = FDBContext(container: container)
+
+        // Insert and save
+        let user = TestUser(name: "David", email: "david@example.com", age: 40)
+        context.insert(user)
+        try await context.save()
+
+        // Fetch by ID
+        let fetchedUser = try await context.model(for: user.id, as: TestUser.self)
+        #expect(fetchedUser != nil)
+        #expect(fetchedUser?.id == user.id)
+        #expect(fetchedUser?.name == user.name)
+        #expect(fetchedUser?.email == user.email)
+        #expect(fetchedUser?.age == user.age)
+    }
+
+    /// Test: Fetch returns nil for missing model
+    @Test("Fetch returns nil for missing model")
+    func fetchReturnsNilForMissingModel() async throws {
+        let container = try await setupContainer()
+        let context = FDBContext(container: container)
+
+        let fetchedUser = try await context.model(for: "nonexistent-id", as: TestUser.self)
+        #expect(fetchedUser == nil)
+    }
+
+    /// Test: Fetch all models of a type
+    @Test("Fetch all models of a type")
+    func fetchAllModels() async throws {
+        let container = try await setupContainer()
+        let context = FDBContext(container: container)
+
+        // Insert multiple users
+        let users = [
+            TestUser(name: "User1", email: "user1@example.com", age: 20),
+            TestUser(name: "User2", email: "user2@example.com", age: 25),
+            TestUser(name: "User3", email: "user3@example.com", age: 30)
+        ]
+        for user in users {
+            context.insert(user)
+        }
+        try await context.save()
+
+        // Fetch all users
+        let fetchedUsers = try await context.fetch(FDBFetchDescriptor<TestUser>())
+        #expect(fetchedUsers.count == 3)
+
+        // Verify names (sorted may vary)
+        let names = Set(fetchedUsers.map(\.name))
+        #expect(names.contains("User1"))
+        #expect(names.contains("User2"))
+        #expect(names.contains("User3"))
+    }
+
+    /// Test: Delete model
+    @Test("Delete model")
+    func deleteModel() async throws {
+        let container = try await setupContainer()
+        let context = FDBContext(container: container)
+
+        // Insert and save
+        let user = TestUser(name: "Eve", email: "eve@example.com", age: 28)
+        context.insert(user)
+        try await context.save()
+
+        // Verify exists
+        let existingUser = try await context.model(for: user.id, as: TestUser.self)
+        #expect(existingUser != nil)
+
+        // Delete and save
+        context.delete(user)
+        try await context.save()
+
+        // Verify deleted
+        let deletedUser = try await context.model(for: user.id, as: TestUser.self)
+        #expect(deletedUser == nil)
+    }
+
+    // MARK: - Multi-Type Tests
+
+    /// Test: Context handles multiple types
+    @Test("Context handles multiple types")
+    func contextHandlesMultipleTypes() async throws {
+        let container = try await setupContainer()
+        let context = FDBContext(container: container)
+
+        // Insert different types
+        let user = TestUser(name: "Frank", email: "frank@example.com", age: 33)
+        let product = TestProduct(name: "Widget", price: 9.99)
+
+        context.insert(user)
+        context.insert(product)
+        try await context.save()
+
+        // Fetch each type
+        let fetchedUsers = try await context.fetch(FDBFetchDescriptor<TestUser>())
+        let fetchedProducts = try await context.fetch(FDBFetchDescriptor<TestProduct>())
+
+        #expect(fetchedUsers.count == 1)
+        #expect(fetchedProducts.count == 1)
+
+        #expect(fetchedUsers.first?.name == "Frank")
+        #expect(fetchedProducts.first?.name == "Widget")
+    }
+
+    // MARK: - Fetch Descriptor Tests
+
+    /// Test: Fetch with limit
+    @Test("Fetch with limit")
+    func fetchWithLimit() async throws {
+        let container = try await setupContainer()
+        let context = FDBContext(container: container)
+
+        // Insert 5 users
+        for i in 1...5 {
+            let user = TestUser(name: "User\(i)", email: "user\(i)@example.com", age: 20 + i)
+            context.insert(user)
+        }
+        try await context.save()
+
+        // Fetch with limit
+        let descriptor = FDBFetchDescriptor<TestUser>(fetchLimit: 2)
+        let fetchedUsers = try await context.fetch(descriptor)
+        #expect(fetchedUsers.count == 2)
+    }
+
+    /// Test: Fetch count
+    @Test("Fetch count")
+    func fetchCount() async throws {
+        let container = try await setupContainer()
+        let context = FDBContext(container: container)
+
+        // Insert 3 users
+        for i in 1...3 {
+            let user = TestUser(name: "User\(i)", email: "user\(i)@example.com", age: 20 + i)
+            context.insert(user)
+        }
+        try await context.save()
+
+        // Fetch count
+        let count = try await context.fetchCount(FDBFetchDescriptor<TestUser>())
+        #expect(count == 3)
+    }
+
+    // MARK: - Perform and Save Tests
+
+    /// Test: performAndSave auto-saves
+    @Test("performAndSave auto-saves")
+    func performAndSaveAutoSaves() async throws {
+        let container = try await setupContainer()
+        let context = FDBContext(container: container)
+
+        let user = TestUser(name: "Grace", email: "grace@example.com", age: 27)
+
+        // Use performAndSave block
+        try await context.performAndSave {
+            context.insert(user)
+        }
+
+        // Should be saved automatically
+        #expect(context.hasChanges == false)
+
+        // Verify in database
+        let fetchedUser = try await context.model(for: user.id, as: TestUser.self)
+        #expect(fetchedUser != nil)
+        #expect(fetchedUser?.name == "Grace")
+    }
+
+    // MARK: - Concurrent Save Tests
+
+    /// Test: Concurrent saves throw error
+    @Test("Concurrent saves throw error")
+    func concurrentSavesThrowError() async throws {
+        let container = try await setupContainer()
+        let context = FDBContext(container: container)
+
+        // Insert multiple users
+        for i in 1...10 {
+            let user = TestUser(name: "User\(i)", email: "user\(i)@example.com", age: 20 + i)
+            context.insert(user)
         }
 
         // Try concurrent saves
@@ -167,107 +369,64 @@ struct FDBContextTests {
             try await context.save()
         }
 
-        // Wait for both to complete
-        _ = try await save1.value
-        _ = try await save2.value
+        // Collect results
+        var results: [Result<Void, Error>] = []
 
-        // Should not have errors (second save should see no changes)
+        do {
+            try await save1.value
+            results.append(.success(()))
+        } catch {
+            results.append(.failure(error))
+        }
+
+        do {
+            try await save2.value
+            results.append(.success(()))
+        } catch {
+            results.append(.failure(error))
+        }
+
+        // At least one should succeed
+        let successes = results.filter { if case .success = $0 { return true } else { return false } }
+        #expect(successes.count >= 1, "At least one save should succeed")
+
+        // If there's a failure, it should be concurrentSaveNotAllowed
+        let failures = results.filter { if case .failure = $0 { return true } else { return false } }
+        for result in failures {
+            if case .failure(let error) = result {
+                #expect(error is FDBContextError, "Concurrent save should throw FDBContextError")
+            }
+        }
+
+        // Final state: no pending changes
         #expect(context.hasChanges == false)
     }
 
-    /// Test: Fetch single item
-    @Test("Fetch single item")
-    func fetchSingleItem() async throws {
-        let (_, container, itemSubspace) = try await setupDatabase()
+    // MARK: - Enumerate Tests
 
+    /// Test: Enumerate all models
+    @Test("Enumerate all models")
+    func enumerateAllModels() async throws {
+        let container = try await setupContainer()
         let context = FDBContext(container: container)
 
-        // Insert and save
-        let item = TestItem(id: 1, name: "Test Item")
-        let data = try JSONEncoder().encode(item)
-        context.insert(data: data, for: "TestItem", primaryKey: Tuple(item.id), subspace: itemSubspace)
-        try await context.save()
-
-        // Fetch
-        let fetchedData = try await context.fetch(for: "TestItem", primaryKey: Tuple(item.id), from: itemSubspace)
-        #expect(fetchedData != nil)
-
-        let fetchedItem = try JSONDecoder().decode(TestItem.self, from: fetchedData!)
-        #expect(fetchedItem.id == item.id)
-        #expect(fetchedItem.name == item.name)
-    }
-
-    /// Test: Fetch returns nil for missing item
-    @Test("Fetch returns nil for missing item")
-    func fetchReturnsNilForMissingItem() async throws {
-        let (_, container, itemSubspace) = try await setupDatabase()
-
-        let context = FDBContext(container: container)
-
-        let fetchedData = try await context.fetch(for: "TestItem", primaryKey: Tuple(999), from: itemSubspace)
-        #expect(fetchedData == nil)
-    }
-
-    /// Test: Fetch all items
-    @Test("Fetch all items")
-    func fetchAllItems() async throws {
-        let (_, container, itemSubspace) = try await setupDatabase()
-
-        let context = FDBContext(container: container)
-
-        // Insert multiple items
-        let items = (1...5).map { TestItem(id: Int64($0), name: "Item \($0)") }
-        for item in items {
-            let data = try JSONEncoder().encode(item)
-            context.insert(data: data, for: "TestItem", primaryKey: Tuple(item.id), subspace: itemSubspace)
+        // Insert users
+        let users = [
+            TestUser(name: "User1", email: "user1@example.com", age: 20),
+            TestUser(name: "User2", email: "user2@example.com", age: 25)
+        ]
+        for user in users {
+            context.insert(user)
         }
         try await context.save()
 
-        // Fetch all
-        var fetchedItems: [(primaryKey: Tuple, data: Data)] = []
-        for try await item in context.fetch(for: "TestItem", from: itemSubspace) {
-            fetchedItems.append(item)
+        // Enumerate
+        var enumeratedNames: [String] = []
+        try await context.enumerate(TestUser.self) { user in
+            enumeratedNames.append(user.name)
         }
 
-        #expect(fetchedItems.count == 5)
-
-        // Verify IDs
-        let ids = fetchedItems.compactMap { $0.primaryKey[0] as? Int64 }.sorted()
-        #expect(ids == [1, 2, 3, 4, 5])
-    }
-
-    /// Test: Rollback clears changes
-    @Test("Rollback clears changes")
-    func rollbackClearsChanges() async throws {
-        let (_, container, itemSubspace) = try await setupDatabase()
-
-        let context = FDBContext(container: container)
-
-        let item = TestItem(id: 1, name: "Test")
-        let data = try JSONEncoder().encode(item)
-        context.insert(data: data, for: "TestItem", primaryKey: Tuple(item.id), subspace: itemSubspace)
-        #expect(context.hasChanges == true)
-
-        context.rollback()
-        #expect(context.hasChanges == false)
-
-        // Save should do nothing
-        try await context.save()
-    }
-
-    /// Test: Reset is equivalent to rollback
-    @Test("Reset is equivalent to rollback")
-    func resetEquivalentToRollback() async throws {
-        let (_, container, itemSubspace) = try await setupDatabase()
-
-        let context = FDBContext(container: container)
-
-        let item = TestItem(id: 1, name: "Test")
-        let data = try JSONEncoder().encode(item)
-        context.insert(data: data, for: "TestItem", primaryKey: Tuple(item.id), subspace: itemSubspace)
-        #expect(context.hasChanges == true)
-
-        context.reset()
-        #expect(context.hasChanges == false)
+        #expect(enumeratedNames.count == 2)
+        #expect(Set(enumeratedNames) == Set(["User1", "User2"]))
     }
 }

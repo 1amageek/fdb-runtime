@@ -1,94 +1,77 @@
-// IndexKind.swift
-// FDBIndexing - Runtime extension of IndexKindMetadata
+// IndexKindMaintainable.swift
+// FDBIndexing - Bridges IndexKind (metadata) with IndexMaintainer (runtime)
 //
-// Adds runtime capabilities (IndexMaintainer creation) to IndexKindMetadata.
-// This protocol depends on FoundationDB types and should only be used in server-side code.
+// IndexMaintainer implementors are responsible for adding IndexKindMaintainable
+// conformance to their corresponding IndexKind.
 
 import Foundation
 import FoundationDB
 import FDBModel
 import FDBCore
 
-/// Runtime extension of IndexKindMetadata with IndexMaintainer creation
+/// Protocol that bridges IndexKind (metadata) with IndexMaintainer (runtime)
 ///
-/// This protocol extends IndexKindMetadata with the ability to create IndexMaintainer
-/// instances at runtime. Since IndexMaintainer depends on FoundationDB types
-/// (Subspace, TransactionProtocol), this protocol must be in FDBIndexing, not FDBCore.
+/// **Responsibility**: IndexMaintainer implementors MUST add this conformance to their IndexKind.
 ///
 /// **Design**:
-/// - IndexKindMetadata (FDBCore): Pure metadata, FDB-independent
-/// - IndexKind (FDBIndexing): Runtime capabilities, FDB-dependent
+/// ```
+/// IndexKind (FDBModel)          IndexMaintainer (FDBIndexing)
+///       ↓                              ↓
+/// ScalarIndexKind              ScalarIndexMaintainer
+///       ↓                              ↓
+///       └──── IndexKindMaintainable ───┘
+///             (implementor bridges them)
+/// ```
 ///
-/// **Example**:
+/// **How it works**:
+/// 1. User defines `#Index<User>([\.email], type: ScalarIndexKind())` in model
+/// 2. `@Persistable` macro generates `IndexDescriptor` with the `IndexKind`
+/// 3. At runtime, system casts `IndexKind` to `IndexKindMaintainable`
+/// 4. `makeIndexMaintainer()` creates the appropriate `IndexMaintainer`
+///
+/// **Standard IndexKinds**: FDBIndexing provides `IndexKindMaintainable` conformance for:
+/// - `ScalarIndexKind` → `ScalarIndexMaintainer`
+/// - (Future: Count, Sum, Min, Max, Version)
+///
+/// **Third-Party Extension**:
 /// ```swift
-/// public struct ScalarIndexKind: IndexKind {
-///     public static let identifier = "scalar"
-///     public static let subspaceStructure = SubspaceStructure.flat
+/// // 1. Define your IndexKind (in your FDB-independent module)
+/// public struct VectorIndexKind: IndexKind {
+///     public static let identifier = "vector"
+///     public static let subspaceStructure = SubspaceStructure.hierarchical
+///     // ...
+/// }
 ///
-///     public static func validateTypes(_ types: [Any.Type]) throws {
-///         // Type validation
-///     }
+/// // 2. Define your IndexMaintainer (in your FDB-dependent module)
+/// public struct HNSWIndexMaintainer<Item: Persistable>: IndexMaintainer {
+///     // ...
+/// }
 ///
-///     public func makeIndexMaintainer<Item: Sendable>(
+/// // 3. Bridge them with IndexKindMaintainable (implementor's responsibility)
+/// extension VectorIndexKind: IndexKindMaintainable {
+///     public func makeIndexMaintainer<Item: Persistable>(
 ///         index: Index,
 ///         subspace: Subspace,
-///         configuration: AlgorithmConfiguration?
-///     ) throws -> any IndexMaintainer<Item> {
-///         return ScalarIndexMaintainer<Item>(index: index, kind: self, subspace: subspace)
+///         idExpression: KeyExpression
+///     ) -> any IndexMaintainer<Item> {
+///         return HNSWIndexMaintainer<Item>(index: index, subspace: subspace, ...)
 ///     }
-///
-///     public init() {}
 /// }
 /// ```
 public protocol IndexKindMaintainable: IndexKind {
-    /// Create an IndexMaintainer instance for this index kind
+    /// Create an IndexMaintainer for this IndexKind
     ///
-    /// **Purpose**: Factory method to create the appropriate IndexMaintainer implementation
+    /// **Implementor's Responsibility**: This method bridges the IndexKind metadata
+    /// with the concrete IndexMaintainer implementation.
     ///
-    /// **Runtime Algorithm Selection**:
-    /// - `configuration` parameter allows runtime algorithm selection (e.g., vector: flat/HNSW/IVF)
-    /// - IndexKind implementations can ignore configuration if not applicable (e.g., scalar)
-    /// - If configuration is nil, implementations should use safe defaults
-    ///
-    /// **Parameters**:
-    /// - index: Index definition (name, rootExpression, etc.)
-    /// - subspace: FDB subspace for storing index data
-    /// - configuration: Optional runtime algorithm configuration
-    ///
-    /// **Returns**: IndexMaintainer instance for maintaining this index
-    ///
-    /// **Throws**: IndexError if configuration is incompatible with this index kind
-    ///
-    /// **Examples**:
-    /// ```swift
-    /// // Scalar: Configuration ignored
-    /// public func makeIndexMaintainer<Item: Sendable>(
-    ///     index: Index,
-    ///     subspace: Subspace,
-    ///     configuration: AlgorithmConfiguration?
-    /// ) throws -> any IndexMaintainer<Item> {
-    ///     return ScalarIndexMaintainer<Item>(index: index, kind: self, subspace: subspace)
-    /// }
-    ///
-    /// // Vector: Configuration determines algorithm
-    /// public func makeIndexMaintainer<Item: Sendable>(
-    ///     index: Index,
-    ///     subspace: Subspace,
-    ///     configuration: AlgorithmConfiguration?
-    /// ) throws -> any IndexMaintainer<Item> {
-    ///     switch configuration {
-    ///     case .vectorFlatScan:
-    ///         return FlatVectorIndexMaintainer<Item>(...)
-    ///     case .vectorHNSW(let params):
-    ///         return HNSWIndexMaintainer<Item>(..., parameters: params)
-    ///     default:
-    ///         return FlatVectorIndexMaintainer<Item>(...)  // Safe default
-    ///     }
-    /// }
-    /// ```
-    func makeIndexMaintainer<Item: Sendable>(
+    /// - Parameters:
+    ///   - index: Index definition (name, rootExpression, etc.)
+    ///   - subspace: FDB subspace for storing index data
+    ///   - idExpression: KeyExpression for extracting item's unique identifier
+    /// - Returns: IndexMaintainer instance for maintaining this index
+    func makeIndexMaintainer<Item: Persistable>(
         index: Index,
         subspace: Subspace,
-        configuration: AlgorithmConfiguration?
-    ) throws -> any IndexMaintainer<Item>
+        idExpression: KeyExpression
+    ) -> any IndexMaintainer<Item>
 }

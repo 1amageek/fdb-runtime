@@ -4,7 +4,6 @@
 import Testing
 import Foundation
 import FDBModel
-import FDBModel
 @testable import FDBIndexing
 
 @Suite("VersionIndexKind Tests")
@@ -34,14 +33,14 @@ struct VersionIndexKindTests {
 
     @Test("VersionIndexKind rejects multiple fields")
     func testRejectMultipleFields() {
-        #expect(throws: IndexError.self) {
+        #expect(throws: IndexTypeValidationError.self) {
             try VersionIndexKind.validateTypes([Int.self, String.self])
         }
     }
 
     @Test("VersionIndexKind rejects empty fields")
     func testRejectEmptyFields() {
-        #expect(throws: IndexError.self) {
+        #expect(throws: IndexTypeValidationError.self) {
             try VersionIndexKind.validateTypes([])
         }
     }

@@ -4,11 +4,44 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Overview
 
-**fdb-runtime** is a Swift package that provides a runtime foundation for data persistence and management on FoundationDB. It consists of three modules in a layered architecture:
+**fdb-runtime** is a Swift package that provides a runtime foundation for data persistence and management on FoundationDB. It consists of four modules in a layered architecture:
 
-1. **FDBIndexing** - Index abstraction layer (protocols and types, FoundationDB-dependent, Server専用)
-2. **FDBCore** - FDB-independent core functionality (model definitions only, 現在はServer専用だがFDB非依存のため将来的に全プラットフォーム対応可能)
-3. **FDBRuntime** - FDB-dependent runtime layer (Store implementation, Server専用, macOS/Linux only)
+1. **FDBModel** - Model definitions and metadata (FDB-independent, all platforms: iOS/macOS/Linux)
+   - `Persistable` protocol and `@Persistable` macro
+   - `IndexKind` protocol and standard implementations (`ScalarIndexKind`, `CountIndexKind`, etc.)
+   - `IndexDescriptor`, `CommonIndexOptions`, `SubspaceStructure`
+   - `TypeValidation` helper functions
+   - `ULID` for auto-generated IDs
+2. **FDBCore** - Schema and Serialization (FDB-independent, all platforms)
+   - `Schema` (entities, versions, index descriptors)
+   - `ProtobufEncoder` / `ProtobufDecoder` for efficient serialization
+3. **FDBIndexing** - Index abstraction layer (FDB-dependent, Server only)
+   - `IndexMaintainer` protocol and implementations:
+     - `ScalarIndexMaintainer` - VALUE indexes for sorting and range queries
+     - `CountIndexMaintainer` - COUNT aggregation with atomic operations
+     - `SumIndexMaintainer` - SUM aggregation with atomic operations
+     - `MinIndexMaintainer` / `MaxIndexMaintainer` - Min/Max tracking
+     - `VersionIndexMaintainer` - Version-based indexes
+   - `IndexKindMaintainable` protocol - bridges IndexKind to IndexMaintainer
+   - `_EntityIndexBuildable` protocol - enables existential type dispatch for OnlineIndexer
+   - `DataAccess` static methods for field extraction
+   - `KeyExpression` and `KeyExpressionVisitor` for index key building
+   - `Index`, `IndexManager`, `IndexStateManager`, `OnlineIndexer`
+4. **FDBRuntime** - Store and Container (FDB-dependent, Server only)
+   - `FDBStore` (type-independent CRUD operations)
+   - `FDBContainer` (schema management, store lifecycle, directory layer)
+   - `FDBContext` (change tracking, batch operations)
+
+**Module Dependencies**:
+```
+FDBModel (Foundation only) ← Can be used on iOS/macOS/Linux clients
+    ↓
+FDBCore (FDBModel only, Foundation only) ← Can be used on iOS/macOS/Linux clients
+    ↓
+FDBIndexing (FDBModel + FDBCore + FoundationDB) ← Server only (macOS/Linux)
+    ↓
+FDBRuntime (FDBModel + FDBCore + FDBIndexing + FoundationDB) ← Server only (macOS/Linux)
+```
 
 This is a foundational package designed to support **multiple data model layers** (Record, Document, Vector, Graph) built on top of it. The key design principle is that **a single FDBStore handles multiple data models simultaneously** through the LayerConfiguration abstraction.
 
@@ -20,8 +53,9 @@ This is a foundational package designed to support **multiple data model layers*
 swift build
 
 # Build specific products
-swift build --product FDBIndexing
+swift build --product FDBModel
 swift build --product FDBCore
+swift build --product FDBIndexing
 swift build --product FDBRuntime
 ```
 
@@ -31,19 +65,20 @@ swift build --product FDBRuntime
 swift test
 
 # Run specific test targets
-swift test --filter FDBIndexingTests
+swift test --filter FDBModelTests
 swift test --filter FDBCoreTests
+swift test --filter FDBIndexingTests
 swift test --filter FDBRuntimeTests
 
 # Run a single test
 swift test --filter FDBCoreTests.PersistableTests
 ```
 
-**Note**: All test targets (FDBIndexingTests, FDBCoreTests, FDBRuntimeTests) require FoundationDB to be installed locally with `libfdb_c.dylib` available at `/usr/local/lib`. This is because:
-- FDBIndexingTests and FDBRuntimeTests directly depend on FoundationDB
-- FDBCoreTests depends on FDBIndexing, which transitively requires FoundationDB
+**Note**: Test targets have different FoundationDB requirements:
+- **FDBModelTests**: Does NOT require FoundationDB (tests FDB-independent model definitions)
+- **FDBCoreTests, FDBIndexingTests, FDBRuntimeTests**: Require FoundationDB installed locally with `libfdb_c.dylib` at `/usr/local/lib`
 
-The linker settings in Package.swift configure the rpath to `/usr/local/lib` for all test targets.
+The linker settings in Package.swift configure the rpath to `/usr/local/lib` for test targets that depend on FoundationDB.
 
 ### Clean Build
 ```bash
@@ -421,7 +456,7 @@ let userData = // ... serialize your data
 context.insert(
     data: userData,
     for: "User",
-    primaryKey: Tuple(123),
+    id: Tuple(user.id),
     subspace: try await container.getOrOpenDirectory(path: ["users"])
 )
 
@@ -531,7 +566,7 @@ struct MyApp {
         context.insert(
             data: userData,
             for: "User",
-            primaryKey: Tuple(123),
+            id: Tuple(user.id),
             subspace: userSubspace
         )
 
@@ -617,26 +652,40 @@ struct FDBContainerTests {
 The codebase follows a strict layered architecture where each layer has clear responsibilities:
 
 ```
-FDBIndexing (metadata protocols)
+FDBModel (FDB-independent, all platforms)
+  - Persistable protocol, @Persistable macro
+  - IndexKind protocol, StandardIndexKinds (Scalar, Count, Sum, Min, Max, Version)
+  - IndexDescriptor, TypeValidation, ULID
     ↓
 FDBCore (FDB-independent, all platforms)
+  - Schema (entities, versions)
+  - Serialization (ProtobufEncoder/Decoder)
     ↓
-FDBRuntime (FDB-dependent protocols + common implementations)
+FDBIndexing (FDB-dependent, server only)
+  - DataAccess, KeyExpression, KeyExpressionVisitor
+  - IndexMaintainer protocol, IndexKindMaintainable protocol
+  - _EntityIndexBuildable protocol (existential type dispatch)
+  - Maintainer implementations: Scalar, Count, Sum, Min, Max, Version
+  - Index, IndexManager, OnlineIndexer, EntityIndexBuilder
+    ↓
+FDBRuntime (FDB-dependent, server only)
+  - FDBStore, FDBContainer, FDBContext
+  - Migration, MigrationContext
     ↓
 Upper layers (fdb-record-layer, fdb-document-layer, etc.)
 ```
 
 ### IndexKind-Based Extensibility
 
-**Status**: ✅ Fully implemented in FDBIndexing module
+**Status**: ✅ Fully implemented in FDBModel module (protocol and standard implementations)
 
-FDBIndexing provides a **protocol-based extensible index system** that allows third parties to add custom index types without modifying the core framework.
+FDBModel provides a **protocol-based extensible index system** that allows third parties to add custom index types without modifying the core framework. The protocol and standard implementations are FDB-independent, enabling use on all platforms including iOS clients.
 
 #### Core Design
 
 **IndexKind Protocol**:
 ```swift
-// FDBIndexing/IndexKind.swift
+// FDBModel/IndexKind.swift
 
 /// Defines the interface for index kinds
 public protocol IndexKind: Sendable, Codable, Hashable {
@@ -665,7 +714,7 @@ public enum SubspaceStructure: String, Sendable, Codable {
 
 **IndexDescriptor Design**:
 ```swift
-// FDBIndexing/IndexDescriptor.swift
+// FDBModel/IndexDescriptor.swift
 
 /// Index metadata descriptor (uses existential type)
 public struct IndexDescriptor: Sendable {
@@ -745,7 +794,8 @@ public struct CountIndexKind: IndexKind {
 ```swift
 @Persistable
 struct User {
-    #PrimaryKey<User>([\.userID])
+    // id is auto-generated as ULID if not defined
+    // var id: String = ULID().ulidString  // (auto-generated)
 
     // Scalar index on email (unique)
     #Index<User>([\.email], type: ScalarIndexKind(), unique: true)
@@ -753,7 +803,6 @@ struct User {
     // Count index by city
     #Index<User>([\.city], type: CountIndexKind())
 
-    var userID: Int64
     var email: String
     var city: String
     var name: String
@@ -854,6 +903,110 @@ default:
 
 ---
 
+### Index Building Architecture
+
+FDBIndexing provides a comprehensive index building system that handles both runtime index maintenance and batch index building during migrations.
+
+#### IndexKindMaintainable Protocol
+
+The `IndexKindMaintainable` protocol bridges IndexKind metadata to IndexMaintainer implementations:
+
+```swift
+// Sources/FDBIndexing/IndexKindMaintainable.swift
+
+public protocol IndexKindMaintainable: IndexKind {
+    /// Create an IndexMaintainer for this index kind
+    func makeIndexMaintainer<Item: Persistable>(
+        index: Index,
+        subspace: Subspace,
+        idExpression: KeyExpression
+    ) -> any IndexMaintainer<Item>
+}
+
+// Each IndexKind implements this protocol
+extension ScalarIndexKind: IndexKindMaintainable {
+    public func makeIndexMaintainer<Item: Persistable>(...) -> any IndexMaintainer<Item> {
+        return ScalarIndexMaintainer<Item>(...)
+    }
+}
+
+extension CountIndexKind: IndexKindMaintainable { ... }
+extension SumIndexKind: IndexKindMaintainable { ... }
+extension MinIndexKind: IndexKindMaintainable { ... }
+extension MaxIndexKind: IndexKindMaintainable { ... }
+extension VersionIndexKind: IndexKindMaintainable { ... }
+```
+
+#### _EntityIndexBuildable Protocol (Existential Type Dispatch)
+
+Swift's existential dispatch doesn't call specialized protocol extensions. When you have `type: any Persistable.Type` and call a method, Swift uses the default implementation, not a specialized `where Self: Codable` extension.
+
+The `_EntityIndexBuildable` protocol solves this by enabling existential type dispatch for OnlineIndexer:
+
+```swift
+// Sources/FDBIndexing/EntityIndexBuilder.swift
+
+/// Internal protocol for existential type dispatch
+public protocol _EntityIndexBuildable: Persistable {
+    static func _buildIndex(
+        database: any DatabaseProtocol,
+        itemSubspace: Subspace,
+        indexSubspace: Subspace,
+        index: Index,
+        indexStateManager: IndexStateManager,
+        batchSize: Int
+    ) async throws
+}
+
+// Automatic conformance for all Codable Persistable types
+extension Persistable where Self: Codable {
+    public static func _buildIndex(...) async throws {
+        try await Self.buildEntityIndex(...)
+    }
+}
+```
+
+**Usage in MigrationContext**:
+
+```swift
+// MigrationContext.addIndex uses persistableType directly
+try await EntityIndexBuilder.buildIndex(
+    forPersistableType: targetEntity.persistableType,  // any Persistable.Type
+    database: database,
+    itemSubspace: itemSubspace,
+    indexSubspace: indexSubspace,
+    index: index,
+    indexStateManager: indexManager.stateManager,
+    batchSize: batchSize
+)
+```
+
+**How it works**:
+1. `Schema.Entity` stores `persistableType: any Persistable.Type`
+2. `EntityIndexBuilder.buildIndex(forPersistableType:)` casts to `any _EntityIndexBuildable.Type`
+3. If successful, calls `_buildIndex()` which dispatches to the concrete type's implementation
+4. The concrete implementation uses `OnlineIndexer<Self>` with the correct type
+
+#### IndexBuilderRegistry (Optional)
+
+For advanced use cases, `IndexBuilderRegistry` provides manual type registration:
+
+```swift
+// Manual registration (optional - not needed for normal usage)
+IndexBuilderRegistry.shared.register(User.self)
+
+// Build index by entity name
+try await IndexBuilderRegistry.shared.buildIndex(
+    entityName: "User",
+    database: database,
+    ...
+)
+```
+
+**Note**: The primary index building flow uses `_EntityIndexBuildable` and doesn't require manual registration.
+
+---
+
 ### Key Design Decisions
 
 1. **FDBStore is Type-Independent and Shared Across All Layers**
@@ -862,21 +1015,30 @@ default:
    - Upper layers add type-safety through wrappers (e.g., `RecordStore<Record>` in fdb-record-layer)
    - Location: `Sources/FDBRuntime/FDBStore.swift`
 
-2. **Protocol-Based Design in FDBRuntime**
+2. **Protocol-Based Design in FDBIndexing**
    - `IndexMaintainer<Item>` protocol - defines interface for index maintenance
-   - `DataAccess<Item>` protocol - defines interface for item field access
-   - Concrete implementations are in upper layers (e.g., fdb-record-layer)
-   - This allows different data models to provide their own implementations
+   - `IndexKindMaintainable` protocol - bridges IndexKind to IndexMaintainer at runtime
+   - `_EntityIndexBuildable` protocol - enables existential type dispatch for OnlineIndexer
+   - `DataAccess` static struct - provides field extraction utilities for all Persistable types
+   - Built-in IndexMaintainer implementations:
+     - `ScalarIndexMaintainer` - VALUE indexes for sorting and range queries
+     - `CountIndexMaintainer` - COUNT aggregation with atomic add operations
+     - `SumIndexMaintainer` - SUM aggregation with atomic add operations
+     - `MinIndexMaintainer` / `MaxIndexMaintainer` - Min/Max tracking via sorted keys
+     - `VersionIndexMaintainer` - Version-based indexes
+   - Upper layers can provide additional IndexMaintainer implementations (e.g., VectorIndexMaintainer)
 
 3. **Separation of Concerns**
-   - **FDBIndexing**: Only metadata (IndexKind, IndexDescriptor) - no FDB dependency
-   - **FDBCore**: Persistable protocol + @Persistable macro - FDB-independent, works on iOS/macOS clients
-   - **FDBRuntime**: Store management (FDBStore, FDBContainer), protocols (IndexMaintainer, DataAccess), built-in IndexKinds
+   - **FDBModel**: Persistable protocol, @Persistable macro, IndexKind/IndexDescriptor metadata, StandardIndexKinds, TypeValidation, ULID - FDB-independent, works on all platforms
+   - **FDBCore**: Schema and Serialization (ProtobufEncoder/Decoder) - FDB-independent, works on all platforms
+   - **FDBIndexing**: DataAccess, KeyExpression, IndexMaintainer protocol, IndexKindMaintainable, _EntityIndexBuildable, all Maintainer implementations (Scalar, Count, Sum, Min, Max, Version), Index, IndexManager, OnlineIndexer, EntityIndexBuilder - FDB-dependent, server only
+   - **FDBRuntime**: Store management (FDBStore, FDBContainer, FDBContext), Migration - FDB-dependent, server only
 
 4. **Macro-Generated Code**
-   - The `@Persistable` macro generates metadata (persistableType, primaryKeyFields, indexDescriptors)
-   - `#PrimaryKey<T>`, `#Index<T>`, `#Directory` macros provide declarative definitions
-   - Macro implementation: `Sources/FDBCoreMacros/PersistableMacro.swift`
+   - The `@Persistable` macro generates metadata (persistableType, id, allFields, indexDescriptors)
+   - The macro auto-generates `var id: String = ULID().ulidString` if user doesn't define it
+   - `#Index<T>`, `#Directory` macros provide declarative definitions
+   - Macro implementation: `Sources/FDBModelMacros/PersistableMacro.swift`
 
 5. **Terminology: "Item" vs "Record"**
    - **FDBRuntime layer** (FDBStore, FDBContext, FDBContainer): Uses **"item"** terminology
@@ -905,28 +1067,67 @@ default:
 - Provides directory operations: `getOrOpenDirectory()`, `createDirectory()`, `openDirectory()`, `moveDirectory()`, `removeDirectory()`
 - Caches FDBStore instances by subspace prefix
 
-#### IndexMaintainer Protocol (Sources/FDBRuntime/IndexMaintainer.swift)
-- Protocol definition only (implementations in upper layers)
+#### IndexMaintainer Protocol (Sources/FDBIndexing/IndexMaintainer.swift)
+- Protocol definition for index maintenance
 - Key methods:
-  - `updateIndex(oldItem:newItem:dataAccess:transaction:)` - called on insert/update/delete
-  - `scanItem(_:primaryKey:dataAccess:transaction:)` - called during batch indexing
+  - `updateIndex(oldItem:newItem:transaction:)` - called on insert/update/delete
+  - `scanItem(_:id:transaction:)` - called during batch indexing
+  - `customBuildStrategy` - optional custom bulk build logic (e.g., for HNSW)
+- **ScalarIndexMaintainer** implementation provided in FDBIndexing for VALUE indexes
 
-#### DataAccess Protocol (Sources/FDBRuntime/DataAccess.swift)
-- Protocol for extracting metadata and field values from items
-- Key methods:
-  - `itemType(for:)` - get item type name
+#### DataAccess (Sources/FDBIndexing/DataAccess.swift)
+- **Static utility struct** (not a protocol) for extracting field values from Persistable items
+- Uses Persistable's `@dynamicMemberLookup` subscript for field access
+- Key static methods:
   - `evaluate(item:expression:)` - evaluate KeyExpression (uses Visitor pattern)
-  - `extractField(from:fieldName:)` - extract single field value
-  - `serialize(_:)` / `deserialize(_:)` - item serialization
-- Default implementations provided via protocol extensions
-- Supports covering index reconstruction (optional via `supportsReconstruction`)
-- **Note**: Upper layers (fdb-record-layer) implement DataAccess for their typed models (e.g., Persistable)
+  - `extractField(from:keyPath:)` - extract single field value as TupleElements
+  - `extractId(from:using:)` - extract item ID using KeyExpression
+  - `serialize(_:)` / `deserialize(_:)` - item serialization via ProtobufEncoder/Decoder
+- Uses `DataAccessEvaluator` visitor for KeyExpression traversal
+- **Note**: Works with any Persistable type via generics
 
-#### Persistable Protocol (Sources/FDBCore/Persistable.swift)
+#### Persistable Protocol (Sources/FDBModel/Persistable.swift)
 - FDB-independent interface for persistable types
 - Generated by `@Persistable` macro
-- Provides metadata: `persistableType`, `primaryKeyFields`, `allFields`, `indexDescriptors`
+- Provides: `id` (auto-generated ULID or user-defined), `persistableType`, `allFields`, `indexDescriptors`
 - Conforms to `Sendable` and `Codable`
+- Uses `@dynamicMemberLookup` for field access by name
+
+#### ID Type Requirements
+
+**Important**: When used with FDBRuntime (server-side), the ID type **MUST** conform to `TupleElement` for FDB key encoding. This cannot be enforced at compile time because FDBModel is platform-independent.
+
+**Supported ID types** (conform to TupleElement):
+- `String` (recommended: ULID for sortable unique IDs)
+- `Int64`, `Int32`, `Int16`, `Int8`, `Int`
+- `UInt64`, `UInt32`, `UInt16`, `UInt8`, `UInt`
+- `UUID`
+- `Double`, `Float`
+- `Bool`
+- `Data`, `[UInt8]`
+
+**Runtime Validation**:
+```swift
+import FDBRuntime
+
+// Validate ID before storage operations
+let user = User(email: "test@example.com", name: "Test")
+let validatedID = try user.validateIDForStorage()  // Throws if ID type invalid
+
+// Or use the helper function
+let id = try validateID(user.id, for: User.persistableType)
+```
+
+**Error Handling**:
+```swift
+do {
+    let validatedID = try user.validateIDForStorage()
+    context.insert(data: data, for: "User", id: validatedID, subspace: subspace)
+} catch let error as IDTypeValidationError {
+    // Handle invalid ID type (custom struct, unsupported enum, etc.)
+    print(error.description)
+}
+```
 
 ### Data Flow
 
@@ -934,8 +1135,8 @@ default:
 ```
 User Code → RecordStore (upper layer)
   → serialize record
-  → FDBStore.save(data, itemType, primaryKey, transaction)
-    → store in itemSubspace: [R]/[itemType]/[primaryKey]
+  → FDBStore.save(data, itemType, id, transaction)
+    → store in itemSubspace: [R]/[itemType]/[id]
   → IndexMaintainer.updateIndex() (via IndexManager in upper layer)
     → update entries in indexSubspace: [I]/[indexName]/...
 ```
@@ -943,8 +1144,8 @@ User Code → RecordStore (upper layer)
 **Load Operation**:
 ```
 User Code → RecordStore (upper layer)
-  → FDBStore.load(itemType, primaryKey, transaction)
-    → fetch from itemSubspace: [R]/[itemType]/[primaryKey]
+  → FDBStore.load(itemType, id, transaction)
+    → fetch from itemSubspace: [R]/[itemType]/[id]
   → deserialize data to record
   → return record
 ```
@@ -952,36 +1153,40 @@ User Code → RecordStore (upper layer)
 ### Subspace Structure
 
 All data is organized under a root subspace with two main sections:
-- **R/** - Item storage: `[subspace]/R/[itemType]/[primaryKey] = data`
+- **R/** - Item storage: `[subspace]/R/[itemType]/[id] = data`
 - **I/** - Index storage: `[subspace]/I/[indexName]/... = ''`
 
 **Note**: The subspace prefix "R" is kept for backward compatibility, even though the terminology changed from "record" to "item".
 
 ### Platform Considerations
 
-- **FDBIndexing**: All platforms (iOS, macOS, Linux, tvOS, watchOS, visionOS)
-- **FDBCore**: All platforms (FDB-independent)
+- **FDBModel**: All platforms (iOS, macOS, Linux, tvOS, watchOS, visionOS) - FDB-independent
+- **FDBCore**: All platforms (iOS, macOS, Linux, tvOS, watchOS, visionOS) - FDB-independent
+- **FDBIndexing**: macOS, Linux only (requires FoundationDB bindings)
 - **FDBRuntime**: macOS, Linux only (requires FoundationDB bindings)
+- Swift tools version: 6.2
 - Swift 6 language mode enabled for all targets
 
 ## Testing Notes
 
 ### Test Structure
-- `Tests/FDBIndexingTests/` - Index metadata and IndexKind tests
-- `Tests/FDBCoreTests/` - Persistable protocol and @Persistable macro tests
-- `Tests/FDBRuntimeTests/` - FDBStore, IndexState, KeyExpression tests
+- `Tests/FDBModelTests/` - @Persistable macro tests, Persistable protocol tests (FDB-independent)
+- `Tests/FDBCoreTests/` - Schema tests (requires FDBRuntime for some integration tests)
+- `Tests/FDBIndexingTests/` - ScalarIndexMaintainer, OnlineIndexer, DataAccess tests
+- `Tests/FDBRuntimeTests/` - FDBStore, FDBContext, FDBContainer tests
 
 ### Test Requirements
 
-All test targets require FoundationDB to be installed locally:
+**FDBModelTests**: Does NOT require FoundationDB - tests FDB-independent model definitions
 
+**FDBCoreTests, FDBIndexingTests, FDBRuntimeTests**: Require FoundationDB installed locally:
 1. **FoundationDB installed locally** - `libfdb_c.dylib` must be available at `/usr/local/lib`
-2. **FoundationDB server running** (for FDBRuntimeTests only)
-3. **Library path configured** - All test targets use linker settings to find the library
+2. **FoundationDB server running** (for integration tests)
+3. **Library path configured** - Test targets use linker settings to find the library
 
-**Why all tests need FoundationDB**:
-- **FDBIndexingTests**: Tests IndexKind implementations that use FoundationDB types (Tuple, TupleElement)
-- **FDBCoreTests**: Depends on FDBIndexing, which requires FoundationDB types
+**Why most tests need FoundationDB**:
+- **FDBCoreTests**: Some tests depend on FDBRuntime for integration testing
+- **FDBIndexingTests**: Tests DataAccess, KeyExpression, ScalarIndexMaintainer using FDB types (Tuple, TupleElement)
 - **FDBRuntimeTests**: Directly tests FDBStore operations against FoundationDB
 
 ### Linker Settings
@@ -996,6 +1201,60 @@ linkerSettings: [
 ```
 
 This ensures `libfdb_c.dylib` can be loaded at runtime, both from command-line (`swift test`) and from Xcode.
+
+## Swift Concurrency Pattern
+
+### final class + Mutex パターン
+
+**重要**: このプロジェクトは `actor` を使用せず、`final class: Sendable` + `Mutex` パターンを採用。
+
+**理由**: スループット最適化
+- actorはシリアライズされた実行 → 低スループット
+- Mutexは細粒度ロック → 高い並行性
+- データベースI/O中も他のタスクを実行可能
+
+**実装パターン**:
+```swift
+import Synchronization
+
+public final class ClassName: Sendable {
+    // 1. DatabaseProtocolは内部的にスレッドセーフ
+    nonisolated(unsafe) private let database: any DatabaseProtocol
+
+    // 2. 可変状態はMutexで保護（structにまとめる）
+    private struct State: Sendable {
+        var counter: Int = 0
+        var isRunning: Bool = false
+    }
+    private let state: Mutex<State>
+
+    public init(database: any DatabaseProtocol) {
+        self.database = database
+        self.state = Mutex(State())
+    }
+
+    // 3. withLockで状態アクセス（ロックスコープは最小限）
+    public func operation() async throws {
+        let count = state.withLock { state in
+            state.counter += 1
+            return state.counter
+        }
+
+        // I/O中はロックを保持しない
+        try await database.withTransaction { transaction in
+            // 他のタスクは getProgress() などを呼べる
+        }
+    }
+}
+```
+
+**ガイドライン**:
+1. ✅ `final class: Sendable` を使用（actorは使用しない）
+2. ✅ `DatabaseProtocol` には `nonisolated(unsafe)` を使用
+3. ✅ 可変状態は `Mutex<State>` で保護（Stateは`Sendable`なstruct）
+4. ✅ ロックスコープは最小限（I/Oを含めない）
+5. ❌ `NSLock` は使用しない（async contextで問題が発生する）
+6. ❌ `@unchecked Sendable` は避ける（Mutexで適切に保護）
 
 ## Dependencies
 
@@ -1045,14 +1304,14 @@ let vectorLayer: LayerConfiguration = VectorLayerConfig()
 try await store.save(
     data: serializedRecord,
     for: "User",  // itemType from RecordLayer
-    primaryKey: Tuple(123),
+    id: Tuple(user.id),
     transaction: transaction
 )
 
 try await store.save(
     data: serializedDocument,
     for: "UserDoc",  // itemType from DocumentLayer
-    primaryKey: Tuple("user_123"),
+    id: Tuple(document.id),
     transaction: transaction
 )
 
@@ -1156,44 +1415,49 @@ struct DocumentLayerConfiguration: LayerConfiguration {
 }
 ```
 
-### Protocol-Based Abstraction: DataAccess and IndexMaintainer
+### DataAccess and IndexMaintainer
 
-The **DataAccess** and **IndexMaintainer** protocols are the extension points that allow each layer to provide its own implementation.
+**DataAccess** is a static utility struct and **IndexMaintainer** is a protocol that allows each layer to provide its own index maintenance implementation.
 
-#### DataAccess: Field Extraction and Serialization
+#### DataAccess: Static Field Extraction Utilities
 
 ```swift
 // Sources/FDBIndexing/DataAccess.swift
 
-public protocol DataAccess<Item>: Sendable {
-    associatedtype Item: Sendable
+/// Static utility struct (not a protocol) for extracting field values
+public struct DataAccess: Sendable {
+    // Private init - all methods are static
 
-    /// Get item type name (e.g., "User", "UserDoc")
-    func itemType(for item: Item) -> String
+    /// Evaluate KeyExpression to extract field values
+    public static func evaluate<Item: Persistable>(
+        item: Item,
+        expression: KeyExpression
+    ) throws -> [any TupleElement]
 
-    /// Extract field value as TupleElements (for indexing)
-    func extractField(from item: Item, fieldName: String) throws -> [any TupleElement]
+    /// Extract a single field using Persistable's subscript
+    public static func extractField<Item: Persistable>(
+        from item: Item,
+        keyPath: String
+    ) throws -> [any TupleElement]
 
-    /// Serialize item to bytes
-    func serialize(_ item: Item) throws -> FDB.Bytes
+    /// Extract id from an item using the id expression
+    public static func extractId<Item: Persistable>(
+        from item: Item,
+        using idExpression: KeyExpression
+    ) throws -> Tuple
 
-    /// Deserialize bytes to item
-    func deserialize(_ bytes: FDB.Bytes) throws -> Item
+    /// Serialize item to bytes using ProtobufEncoder
+    public static func serialize<Item: Persistable>(_ item: Item) throws -> FDB.Bytes
 
-    /// Evaluate KeyExpression on item (uses Visitor pattern)
-    func evaluate(item: Item, expression: KeyExpression) throws -> [any TupleElement]
-
-    // ... more methods
+    /// Deserialize bytes to item using ProtobufDecoder
+    public static func deserialize<Item: Persistable>(_ bytes: FDB.Bytes) throws -> Item
 }
 ```
 
-**Why This Matters**:
-- **Record Layer**: Implements using Swift reflection (Mirror API) or macro-generated code
-- **Document Layer**: Implements using JSONPath or XPath-like expressions
-- **Vector Layer**: Implements by extracting embeddings from various formats
-- **Graph Layer**: Implements by traversing node/edge structures
-
-Each layer has different field access semantics, but FDBStore doesn't need to know - it just uses the DataAccess protocol.
+**Design Decision**: DataAccess is a static utility struct rather than a protocol because:
+- All Persistable types have the same field access mechanism (`@dynamicMemberLookup` subscript)
+- No need for different implementations per data layer
+- Simpler API - just call `DataAccess.extractField(from: item, keyPath: "email")`
 
 #### IndexMaintainer: Index Update Logic
 
@@ -1201,21 +1465,19 @@ Each layer has different field access semantics, but FDBStore doesn't need to kn
 // Sources/FDBIndexing/IndexMaintainer.swift
 
 public protocol IndexMaintainer<Item>: Sendable {
-    associatedtype Record: Sendable
+    associatedtype Item: Persistable
 
-    /// Update index when record changes
+    /// Update index when item changes
     func updateIndex(
-        oldItem: Record?,
-        newItem: Record?,
-        dataAccess: any DataAccess<Record>,
+        oldItem: Item?,
+        newItem: Item?,
         transaction: any TransactionProtocol
     ) async throws
 
-    /// Scan record during batch indexing
+    /// Scan item during batch indexing
     func scanItem(
-        _ record: Record,
-        primaryKey: Tuple,
-        dataAccess: any DataAccess<Record>,
+        _ item: Item,
+        id: Tuple,
         transaction: any TransactionProtocol
     ) async throws
 }
@@ -1231,49 +1493,82 @@ Each index type has different maintenance logic, but FDBStore doesn't need to kn
 
 ### Module Organization Rationale
 
-#### Why Protocols Moved to FDBIndexing
+#### Current Module Structure
 
-**FDBIndexing contains**:
+**FDBModel** (FDB-independent, all platforms):
+```
+FDBModel/
+  ├── Persistable.swift          # Protocol + @dynamicMemberLookup
+  ├── Macros.swift               # @Persistable, #Index, #Directory macros
+  ├── IndexKind.swift            # Protocol for index kinds
+  ├── StandardIndexKinds.swift   # Scalar, Count, Sum, Min, Max, Version
+  ├── IndexDescriptor.swift      # Index metadata
+  ├── CommonIndexOptions.swift   # Unique, sparse, metadata
+  ├── SubspaceStructure.swift    # flat, hierarchical, aggregation
+  ├── TypeValidation.swift       # isComparable, isNumeric helpers
+  ├── ULID.swift                 # Auto-generated sortable IDs
+  └── EnumMetadata.swift         # Enum field metadata
+```
+
+**FDBCore** (FDB-independent, all platforms):
+```
+FDBCore/
+  ├── Schema.swift               # Entity definitions, versioning
+  └── Serialization/
+      ├── ProtobufEncoder.swift  # Efficient binary serialization
+      └── ProtobufDecoder.swift
+```
+
+**FDBIndexing** (FDB-dependent, server only):
 ```
 FDBIndexing/
-  ├── LayerConfiguration.swift
-  ├── IndexMaintainer.swift
-  ├── DataAccess.swift
-  ├── Index.swift
-  ├── KeyExpression.swift
-  └── IndexKind.swift
+  ├── DataAccess.swift           # Static field extraction utilities
+  ├── KeyExpression.swift        # Field, Concatenate, Literal, etc.
+  ├── KeyExpressionVisitor.swift # Visitor pattern for evaluation
+  ├── IndexMaintainer.swift      # Protocol for index maintenance
+  ├── ScalarIndexMaintainer.swift # VALUE index implementation
+  ├── Index.swift                # Runtime index definition
+  ├── IndexManager.swift         # Index registry and lifecycle
+  ├── IndexStateManager.swift    # Index build state tracking
+  ├── OnlineIndexer.swift        # Background index building
+  └── IndexBuildStrategy.swift   # Custom build strategies (e.g., HNSW)
 ```
 
-**Rationale**:
-1. **Abstraction Layer**: These protocols define the contract between FDBStore and upper layers
-2. **Shared by Multiple Layers**: Record, Document, Vector, Graph layers all implement these protocols
-3. **Dependency Direction**: FDBRuntime depends on FDBIndexing (implements the protocols), not vice versa
-4. **Extension Point**: Third-party layers can implement these protocols without modifying FDBRuntime
+**Rationale for FDBModel/FDBIndexing Split**:
+1. **Platform Independence**: IndexKind, IndexDescriptor can be used on iOS clients
+2. **Clean Dependencies**: FDBModel has no FoundationDB dependency
+3. **Runtime vs Metadata**: IndexDescriptor (metadata) vs Index (runtime with KeyExpression)
+4. **Extension Point**: Third-party index kinds can be added in FDBModel without FDB
 
-#### FDBIndexing: Why FoundationDB-Dependent?
+#### Why FDBIndexing is FoundationDB-Dependent
 
-**Original Confusion**:
-- Old comments suggested FDBIndexing should be "FDB-independent metadata only"
-- This was based on seeing IndexDescriptor and IndexKind (pure metadata)
+**FDBModel** (client-shareable):
+- `IndexKind` protocol, `IndexDescriptor` - pure metadata, Codable
+- `TypeValidation` - uses Swift types only
 
-**Reality**:
-- **IndexDescriptor/IndexKind**: Metadata (no FDB types) - can be shared with clients
-- **Index/DataAccess/IndexMaintainer**: Runtime abstractions (use FDB types: Tuple, Subspace, TransactionProtocol)
-
-**Decision**:
-- FDBIndexing is **FoundationDB-dependent** (like fdb-record-layer's FDBRecordLayer)
-- This allows protocols to use FDB types directly (Tuple, TupleElement, Subspace)
-- Client apps (iOS/macOS) don't need these protocols - they only need metadata (IndexDescriptor)
+**FDBIndexing** (server-only):
+- `DataAccess` - uses FDB types (Tuple, TupleElement)
+- `KeyExpression` - uses FDB types for key building
+- `IndexMaintainer` - uses TransactionProtocol
+- `ScalarIndexMaintainer` - full FDB integration
 
 **Platform Impact**:
 ```swift
 // Package.swift
 .target(
+    name: "FDBModel",
+    dependencies: ["FDBModelMacros"],  // No FoundationDB!
+    // All platforms supported
+)
+
+.target(
     name: "FDBIndexing",
     dependencies: [
+        "FDBModel",
+        "FDBCore",
         .product(name: "FoundationDB", package: "fdb-swift-bindings"),
-    ],
-    platforms: [.macOS(.v15)]  // Server-only
+    ]
+    // macOS/Linux only
 )
 ```
 
@@ -1286,9 +1581,9 @@ FDBIndexing/
 | **Purpose** | Schema metadata, serializable | Runtime index definition |
 | **Dependencies** | Foundation-only | FoundationDB (Tuple, Subspace) |
 | **Platform** | All (iOS, macOS, Linux) | Server-only (macOS, Linux) |
-| **Location** | FDBIndexing | FDBIndexing |
+| **Location** | FDBModel | FDBIndexing |
 | **Usage** | Schema versioning, client sharing | Index maintenance at runtime |
-| **Codable** | ✅ Yes | ❌ No (contains KeyExpression tree) |
+| **Codable** | ❌ No (uses `any IndexKind`) | ❌ No (contains KeyExpression tree) |
 
 **Why Both Exist**:
 ```swift
@@ -1327,23 +1622,26 @@ extension Index {
 
 | Module | Platforms | FoundationDB Dependency | Reason |
 |--------|-----------|------------------------|--------|
-| **FDBIndexing** | macOS, Linux | ✅ Yes | Protocol abstractions use FDB types |
-| **FDBCore** | macOS, Linux (現在) | ❌ No (FDBIndexingに依存) | FDB非依存だが現在はPackage.swiftでmacOSのみ、将来的に全プラットフォーム対応可能 |
+| **FDBModel** | All (iOS, macOS, Linux, etc.) | ❌ No | Model definitions, metadata, ULID - client-shareable |
+| **FDBCore** | All (iOS, macOS, Linux, etc.) | ❌ No | Schema, Serialization - client-shareable |
+| **FDBIndexing** | macOS, Linux | ✅ Yes | DataAccess, KeyExpression, IndexMaintainer use FDB types |
 | **FDBRuntime** | macOS, Linux | ✅ Yes | Server-side store implementation |
 
 #### Dependency Graph
 
 ```
 fdb-runtime (this package)
-├── FDBIndexing (macOS/Linux, FDB-dependent)
-│   └── Depends on: FoundationDB
+├── FDBModel (All platforms, FDB-independent)
+│   └── Depends on: FDBModelMacros only
 │
 ├── FDBCore (All platforms, FDB-independent)
-│   └── Depends on: FDBIndexing (metadata only)
+│   └── Depends on: FDBModel
+│
+├── FDBIndexing (macOS/Linux, FDB-dependent)
+│   └── Depends on: FDBModel, FDBCore, FoundationDB
 │
 └── FDBRuntime (macOS/Linux, FDB-dependent)
-    ├── Depends on: FDBCore, FDBIndexing, FoundationDB
-    └── Uses: DataAccess, IndexMaintainer protocols from FDBIndexing
+    └── Depends on: FDBModel, FDBCore, FDBIndexing, FoundationDB
 
 Upper layers (separate packages)
 ├── fdb-record-layer
@@ -1360,31 +1658,32 @@ Upper layers (separate packages)
 
 **Client Apps (iOS/macOS)**:
 ```swift
-import FDBCore  // Only this - get @Persistable, metadata
+import FDBModel  // Only this - get @Persistable, metadata
 
 @Persistable
 struct User {
-    #PrimaryKey<User>([\.userID])
-    var userID: Int64
+    // id is auto-generated as ULID
+    var email: String
     var name: String
 }
 
 // Use Codable for JSON API
-let user = User(userID: 123, name: "Alice")
+let user = User(email: "alice@example.com", name: "Alice")
+print(user.id)  // Auto-generated ULID: "01HXXXXXXXXXXXXXXXXXXXXXX"
 let json = try JSONEncoder().encode(user)
 ```
 
 **Server Apps (macOS/Linux)**:
 ```swift
-import FDBCore       // Model definitions
+import FDBModel      // Model definitions
 import FDBRuntime    // Store management
 import FDBRecordLayer  // Typed RecordStore
 
 @Persistable
 struct User {
-    #PrimaryKey<User>([\.userID])
-    #Index<User>([\.email])
-    var userID: Int64
+    // id is auto-generated as ULID
+    #Index<User>([\.email], unique: true)
+
     var email: String
     var name: String
 }
@@ -1396,7 +1695,8 @@ let store = try await RecordStore(
     subspace: subspace
 )
 
-try await store.save(user)
+let user = User(email: "alice@example.com", name: "Alice")
+try await store.save(user)  // Uses user.id as the key
 ```
 
 ### Data Flow Across Layers
@@ -1419,8 +1719,8 @@ try await documentStore.save(document)
 //    → get LayerConfiguration
 //
 // 2. FDBStore (fdb-runtime)
-//    → save(data, itemType: "Document", primaryKey: Tuple("doc123"), transaction)
-//    → store in [R]/Document/doc123 = data
+//    → save(data, itemType: "Document", id: Tuple(document.id), transaction)
+//    → store in [R]/Document/[id] = data
 //
 // 3. LayerConfiguration.makeIndexMaintainer()
 //    → returns VectorIndexMaintainer (from fdb-vector-layer)
@@ -1437,26 +1737,147 @@ try await documentStore.save(document)
 
 1. **Single Store, Multiple Models**: FDBStore is type-independent, serves all data layers simultaneously
 
-2. **Protocol-Based Extension**: DataAccess and IndexMaintainer define contracts, each layer provides implementations
+2. **Protocol-Based Extension**: IndexKind and IndexMaintainer define contracts, each layer provides implementations
 
-3. **LayerConfiguration Factory**: Upper layers register their ItemTypes and provide factories for DataAccess/IndexMaintainer
+3. **LayerConfiguration Factory**: Upper layers register their ItemTypes and provide factories for IndexMaintainer
 
 4. **Clear Module Boundaries**:
-   - FDBIndexing: Protocols + metadata (FDB-dependent, server-only)
-   - FDBCore: Model definitions (FDB-independent, all platforms)
+   - FDBModel: Model definitions, IndexKind/IndexDescriptor metadata (FDB-independent, all platforms)
+   - FDBCore: Schema, Serialization (FDB-independent, all platforms)
+   - FDBIndexing: DataAccess, KeyExpression, IndexMaintainer, ScalarIndexMaintainer (FDB-dependent, server-only)
    - FDBRuntime: Store implementation (FDB-dependent, server-only)
 
-5. **Metadata vs Runtime Separation**: IndexDescriptor (Codable metadata) vs Index (runtime with KeyExpression tree)
+5. **Metadata vs Runtime Separation**: IndexDescriptor (metadata) vs Index (runtime with KeyExpression tree)
 
-6. **Platform-Aware Design**: Client apps get model definitions only, server apps get full persistence stack
+6. **Platform-Aware Design**: Client apps get model definitions (FDBModel/FDBCore), server apps get full persistence stack
 
 This architecture enables **composable data models** where a single FDBStore handles Records, Documents, Vectors, and Graphs in the same transaction, with each layer contributing its own indexing and query capabilities.
 
 ## Important File Locations
 
-- Core protocols: `Sources/FDBCore/Persistable.swift`
-- Macro implementation: `Sources/FDBCoreMacros/PersistableMacro.swift`
-- Store implementation: `Sources/FDBRuntime/FDBStore.swift`
-- Container: `Sources/FDBRuntime/FDBContainer.swift`
-- Protocol definitions: `Sources/FDBIndexing/IndexMaintainer.swift`, `Sources/FDBIndexing/DataAccess.swift`, `Sources/FDBIndexing/LayerConfiguration.swift`
-- Architecture documentation: `docs/architecture.md`
+### FDBModel (FDB-independent, all platforms)
+- Persistable protocol: `Sources/FDBModel/Persistable.swift`
+- Macro definitions: `Sources/FDBModel/Macros.swift`
+- IndexKind protocol: `Sources/FDBModel/IndexKind.swift`
+- Standard IndexKinds: `Sources/FDBModel/StandardIndexKinds.swift`
+- IndexDescriptor: `Sources/FDBModel/IndexDescriptor.swift`
+- TypeValidation: `Sources/FDBModel/TypeValidation.swift`
+- ULID implementation: `Sources/FDBModel/ULID.swift`
+- Macro implementation: `Sources/FDBModelMacros/PersistableMacro.swift`
+
+### FDBCore (FDB-independent, all platforms)
+- Schema: `Sources/FDBCore/Schema.swift`
+- Serialization: `Sources/FDBCore/Serialization/ProtobufEncoder.swift`, `Sources/FDBCore/Serialization/ProtobufDecoder.swift`
+
+### FDBIndexing (FDB-dependent, server only)
+- DataAccess: `Sources/FDBIndexing/DataAccess.swift`
+- KeyExpression: `Sources/FDBIndexing/KeyExpression.swift`
+- KeyExpressionVisitor: `Sources/FDBIndexing/KeyExpressionVisitor.swift`
+- IndexMaintainer protocol: `Sources/FDBIndexing/IndexMaintainer.swift`
+- IndexKindMaintainable protocol: `Sources/FDBIndexing/IndexKindMaintainable.swift`
+- Maintainer implementations:
+  - ScalarIndexMaintainer: `Sources/FDBIndexing/ScalarIndexMaintainer.swift`
+  - CountIndexMaintainer: `Sources/FDBIndexing/CountIndexMaintainer.swift`
+  - SumIndexMaintainer: `Sources/FDBIndexing/SumIndexMaintainer.swift`
+  - MinIndexMaintainer: `Sources/FDBIndexing/MinIndexMaintainer.swift`
+  - MaxIndexMaintainer: `Sources/FDBIndexing/MaxIndexMaintainer.swift`
+  - VersionIndexMaintainer: `Sources/FDBIndexing/VersionIndexMaintainer.swift`
+- EntityIndexBuilder: `Sources/FDBIndexing/EntityIndexBuilder.swift`
+- Index: `Sources/FDBIndexing/Index.swift`
+- IndexManager: `Sources/FDBIndexing/IndexManager.swift`
+- OnlineIndexer: `Sources/FDBIndexing/OnlineIndexer.swift`
+
+### FDBRuntime (FDB-dependent, server only)
+- FDBStore: `Sources/FDBRuntime/FDBStore.swift`
+- FDBContainer: `Sources/FDBRuntime/FDBContainer.swift`
+- FDBContext: `Sources/FDBRuntime/FDBContext.swift`
+- ID validation: `Sources/FDBRuntime/IDValidation.swift`
+
+### Documentation
+- ID design: `docs/ID-DESIGN.md`
+
+## Current Limitations
+
+### Nested Fields Not Supported
+
+The `#Index` macro and `DataAccess.evaluate()` currently do **not** support nested field paths (e.g., `\.address.city`). Only top-level fields are supported for indexing.
+
+**Workaround**: Flatten nested data into top-level fields if indexing is needed:
+
+```swift
+// ❌ Not supported
+@Persistable
+struct User {
+    var address: Address
+    // #Index<User>([\.address.city])  // Won't work
+}
+
+// ✅ Supported
+@Persistable
+struct User {
+    var addressCity: String  // Flattened
+    #Index<User>([\.addressCity])
+}
+```
+
+### Index Key Expression Limitations
+
+- `FieldKeyExpression` only supports single-level field names
+- Complex expressions (nested objects, computed properties) are not supported
+- Array fields cannot be indexed directly (no multi-value index support yet)
+
+### Manual Schema.Entity Prevents Online Index Building
+
+When `Schema.Entity` is created with the manual initializer (without a concrete `Persistable.Type`), the `persistableType` property becomes a placeholder (`_PlaceholderPersistable`). This means:
+
+- **OnlineIndexer cannot build indexes** for manually created entities
+- The `_EntityIndexBuildable` conformance check will fail
+
+**Solution**: Always use `Schema([User.self, Product.self])` or `Schema.Entity(from: User.self)` when you need OnlineIndexer support during migrations.
+
+```swift
+// ✅ Correct: Use Persistable types
+let schema = Schema([User.self, Product.self])
+
+// ❌ Avoid for migrations: Manual entity creation
+let entity = Schema.Entity(
+    name: "User",
+    allFields: ["id", "email"],
+    indexDescriptors: []
+)  // OnlineIndexer won't work
+```
+
+### Unique Constraint ID Comparison Uses String Conversion
+
+The unique constraint check in `FDBDataStore.checkUniqueConstraint` compares IDs using `String(describing:)` conversion. This could theoretically cause false positives if different ID types have the same string representation.
+
+**Example of potential issue**:
+```swift
+// Int64(123) and String("123") would compare as equal
+// This is unlikely in practice but worth noting
+```
+
+**Mitigation**: Use consistent ID types across your schema. The recommended approach is to use `String` (ULID) for all IDs.
+
+### Aggregation Index Keys Remain at Zero
+
+`CountIndexMaintainer` and `SumIndexMaintainer` use FDB atomic operations for efficiency. When a count or sum reaches zero, the key is **not deleted** - it remains with a zero value.
+
+**Impact**:
+- Storage: Slightly increased storage usage for zero-value keys
+- Queries: Zero values are still returned in range scans
+
+**Workaround**: If you need to clean up zero-value keys, implement periodic cleanup in your application layer:
+
+```swift
+// Example: Clean up zero-count keys
+func cleanupZeroCounts(in subspace: Subspace, transaction: any TransactionProtocol) async throws {
+    let (begin, end) = subspace.range()
+    for try await (key, value) in transaction.getRange(begin: begin, end: end, snapshot: false) {
+        let count = value.withUnsafeBytes { $0.load(as: Int64.self) }
+        if count == 0 {
+            transaction.clear(key: key)
+        }
+    }
+}
+```

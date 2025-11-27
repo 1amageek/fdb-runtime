@@ -1,7 +1,7 @@
 // TypeValidation.swift
-// FDBIndexing - Type validation helper functions
+// FDBModel - Type validation helper functions (FDB-independent)
 //
-// Helper functions for use in IndexKindProtocol.validateTypes() implementations.
+// Helper functions for use in IndexKind.validateTypes() implementations.
 // Provides type checking using actual type metatypes.
 
 import Foundation

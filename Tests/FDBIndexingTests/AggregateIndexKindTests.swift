@@ -35,14 +35,14 @@ struct CountIndexKindTests {
 
     @Test("CountIndexKind rejects empty fields")
     func testRejectEmptyFields() {
-        #expect(throws: IndexError.self) {
+        #expect(throws: IndexTypeValidationError.self) {
             try CountIndexKind.validateTypes([])
         }
     }
 
     @Test("CountIndexKind rejects non-Comparable grouping fields")
     func testRejectNonComparableGroupingFields() {
-        #expect(throws: IndexError.self) {
+        #expect(throws: IndexTypeValidationError.self) {
             try CountIndexKind.validateTypes([[Int].self])
         }
     }
@@ -78,19 +78,19 @@ struct SumIndexKindTests {
     @Test("SumIndexKind rejects less than 2 fields")
     func testRejectLessThanTwoFields() {
         // 0 fields
-        #expect(throws: IndexError.self) {
+        #expect(throws: IndexTypeValidationError.self) {
             try SumIndexKind.validateTypes([])
         }
 
         // 1 field
-        #expect(throws: IndexError.self) {
+        #expect(throws: IndexTypeValidationError.self) {
             try SumIndexKind.validateTypes([Int64.self])
         }
     }
 
     @Test("SumIndexKind rejects non-Comparable grouping fields")
     func testRejectNonComparableGroupingFields() {
-        #expect(throws: IndexError.self) {
+        #expect(throws: IndexTypeValidationError.self) {
             try SumIndexKind.validateTypes([[Int].self, Int64.self])
         }
     }
@@ -98,12 +98,12 @@ struct SumIndexKindTests {
     @Test("SumIndexKind rejects non-numeric value field")
     func testRejectNonNumericValueField() {
         // Value field is String (not numeric)
-        #expect(throws: IndexError.self) {
+        #expect(throws: IndexTypeValidationError.self) {
             try SumIndexKind.validateTypes([String.self, String.self])
         }
 
         // Value field is Date (not numeric)
-        #expect(throws: IndexError.self) {
+        #expect(throws: IndexTypeValidationError.self) {
             try SumIndexKind.validateTypes([String.self, Date.self])
         }
     }
@@ -139,12 +139,12 @@ struct MinIndexKindTests {
     @Test("MinIndexKind rejects less than 2 fields")
     func testRejectLessThanTwoFields() {
         // 0 fields
-        #expect(throws: IndexError.self) {
+        #expect(throws: IndexTypeValidationError.self) {
             try MinIndexKind.validateTypes([])
         }
 
         // 1 field
-        #expect(throws: IndexError.self) {
+        #expect(throws: IndexTypeValidationError.self) {
             try MinIndexKind.validateTypes([Double.self])
         }
     }
@@ -152,12 +152,12 @@ struct MinIndexKindTests {
     @Test("MinIndexKind rejects non-Comparable fields")
     func testRejectNonComparableFields() {
         // Grouping field is not Comparable
-        #expect(throws: IndexError.self) {
+        #expect(throws: IndexTypeValidationError.self) {
             try MinIndexKind.validateTypes([[Int].self, Double.self])
         }
 
         // Value field is not Comparable
-        #expect(throws: IndexError.self) {
+        #expect(throws: IndexTypeValidationError.self) {
             try MinIndexKind.validateTypes([String.self, [Int].self])
         }
     }
@@ -193,12 +193,12 @@ struct MaxIndexKindTests {
     @Test("MaxIndexKind rejects less than 2 fields")
     func testRejectLessThanTwoFields() {
         // 0 fields
-        #expect(throws: IndexError.self) {
+        #expect(throws: IndexTypeValidationError.self) {
             try MaxIndexKind.validateTypes([])
         }
 
         // 1 field
-        #expect(throws: IndexError.self) {
+        #expect(throws: IndexTypeValidationError.self) {
             try MaxIndexKind.validateTypes([Double.self])
         }
     }
@@ -206,12 +206,12 @@ struct MaxIndexKindTests {
     @Test("MaxIndexKind rejects non-Comparable fields")
     func testRejectNonComparableFields() {
         // Grouping field is not Comparable
-        #expect(throws: IndexError.self) {
+        #expect(throws: IndexTypeValidationError.self) {
             try MaxIndexKind.validateTypes([[Int].self, Double.self])
         }
 
         // Value field is not Comparable
-        #expect(throws: IndexError.self) {
+        #expect(throws: IndexTypeValidationError.self) {
             try MaxIndexKind.validateTypes([String.self, [Int].self])
         }
     }

@@ -6,47 +6,51 @@ import FDBIndexing
 import Synchronization
 import Logging
 
-/// FDBContainer - Complete implementation for type-independent persistence
+/// FDBContainer - SwiftData-like container for FoundationDB persistence
 ///
-/// **Design Philosophy**: FDBContainer is the COMPLETE implementation extracted
-/// from FDBRecordLayer to be universally usable across all upper layers:
-/// - record-layer: Typed RecordStore wrapper
-/// - graph-layer: Graph data structures
-/// - document-layer: JSON/Document storage
+/// **Design Philosophy**: Like SwiftData's ModelContainer, FDBContainer manages
+/// the persistence infrastructure and provides FDBContext instances for data operations.
 ///
-/// **Complete Responsibilities**:
+/// **Responsibilities**:
 /// - Schema management (version, entities, indexes)
 /// - Migration execution (schema evolution)
-/// - FDBStore lifecycle management (creation, caching)
-/// - FDBContext management (change tracking, autosave)
+/// - FDBContext management (main context + background contexts)
 /// - DirectoryLayer singleton management
 /// - Database connection management
 ///
-/// **Usage example (SwiftData-like API)**:
+/// **Usage**:
 /// ```swift
-/// // Simple initialization (recommended)
+/// // 1. Initialize FDB (once at app startup)
+/// try await FDBClient.initialize()
+///
+/// // 2. Create container
 /// let schema = Schema([User.self, Order.self])
 /// let config = FDBConfiguration(schema: schema)
 /// let container = try FDBContainer(configurations: [config])
 ///
-/// // Access main context
+/// // 3. Access main context (SwiftData-like)
 /// let context = await container.mainContext
-/// await context.insert(data: userData, for: "User", primaryKey: Tuple(123))
+///
+/// // 4. Use context for all data operations
+/// context.insert(user)
+/// context.insert(order)
 /// try await context.save()
+///
+/// // 5. Fetch data
+/// let users = try await context.fetch(FDBFetchDescriptor<User>())
 /// ```
 ///
-/// **Low-level usage**:
+/// **Background Operations**:
 /// ```swift
-/// // Manual database initialization
-/// let database = try FDBClient.openDatabase()
-/// let container = FDBContainer(
-///     database: database,
-///     schema: schema,
-///     migrations: [migration1, migration2]
-/// )
-///
-/// // Get or create store for a specific subspace
-/// let store = container.store(for: subspace)
+/// // Create new context for background work
+/// let backgroundContext = container.newContext()
+/// Task.detached {
+///     // Perform bulk operations
+///     for data in largeDataset {
+///         backgroundContext.insert(Model(from: data))
+///     }
+///     try await backgroundContext.save()
+/// }
 /// ```
 public final class FDBContainer: Sendable {
     // MARK: - Properties
@@ -60,8 +64,11 @@ public final class FDBContainer: Sendable {
     /// Configurations (SwiftData-compatible)
     public let configurations: [FDBConfiguration]
 
-    /// Migrations (schema evolution)
+    /// Migrations (schema evolution) - legacy API
     private let migrations: [Migration]
+
+    /// Migration plan (SwiftData-like API)
+    nonisolated(unsafe) private var _migrationPlan: (any SchemaMigrationPlan.Type)?
 
     /// DirectoryLayer instance (created once, reused for all operations)
     private let directoryLayer: FoundationDB.DirectoryLayer
@@ -69,29 +76,24 @@ public final class FDBContainer: Sendable {
     /// Logger
     private let logger: Logger
 
-    /// Root subspace for this container (for metadata isolation)
+    /// Root subspace for data storage
     ///
-    /// **Purpose**: Provides namespace isolation for multi-tenant or multiple container scenarios
-    /// - If provided: Metadata is stored under `rootSubspace.subspace("_metadata")`
-    /// - If nil: Metadata is stored under `Subspace(prefix: [0xFE])` (default, shared)
+    /// All data is stored under this subspace:
+    /// - Records: `[subspace]/R/[persistableType]/[id]`
+    /// - Indexes: `[subspace]/I/[indexName]/[values]/[id]`
     ///
-    /// **Example**:
+    /// **Usage**:
     /// ```swift
-    /// // Isolated container (multi-tenant)
-    /// let tenantSubspace = Subspace(prefix: Tuple("tenant", tenantID).pack())
-    /// let container = FDBContainer(..., rootSubspace: tenantSubspace)
-    /// // → Metadata at: tenantSubspace/_metadata/schema/version
+    /// // Default subspace (auto-created)
+    /// let container = try FDBContainer(configurations: [config])
+    /// // → Data at: [fdb]/R/..., [fdb]/I/...
     ///
-    /// // Shared container (default)
-    /// let container = FDBContainer(..., rootSubspace: nil)
-    /// // → Metadata at: [0xFE]/schema/version
+    /// // Custom subspace (multi-tenant)
+    /// let tenantSubspace = Subspace(prefix: Tuple("tenant", tenantID).pack())
+    /// let container = FDBContainer(..., subspace: tenantSubspace)
+    /// // → Data at: tenant/[tenantID]/R/..., tenant/[tenantID]/I/...
     /// ```
-    public let rootSubspace: Subspace?
-
-    /// FDBStore cache
-    /// Key: Subspace (identified by prefix bytes)
-    /// Value: FDBStore instance
-    private let storeCache: Mutex<[Data: FDBStore]>
+    public let subspace: Subspace
 
     /// Main context (SwiftData-like API)
     /// Created lazily on first access
@@ -129,6 +131,8 @@ public final class FDBContainer: Sendable {
     ///
     /// // Access main context
     /// let context = await container.mainContext
+    /// context.insert(user)
+    /// try await context.save()
     /// ```
     ///
     /// - Throws: Error if database connection fails or no configurations provided
@@ -158,9 +162,9 @@ public final class FDBContainer: Sendable {
         self.schema = firstConfig.schema
         self.configurations = configurations
         self.migrations = migrations
-        self.rootSubspace = nil  // SwiftData-like API uses default shared metadata
+        self._migrationPlan = nil
+        self.subspace = Subspace(prefix: Tuple("fdb").pack())  // Default subspace
         self.logger = Logger(label: "com.fdb.runtime.container")
-        self.storeCache = Mutex([:])
         self._mainContext = nil
 
         // Initialize DirectoryLayer (singleton pattern)
@@ -180,15 +184,15 @@ public final class FDBContainer: Sendable {
     ///   - database: The FDB database
     ///   - schema: Schema defining entities and indexes
     ///   - migrations: Array of migrations for schema evolution (optional)
-    ///   - rootSubspace: Root subspace for metadata isolation (optional, for multi-tenant)
+    ///   - subspace: Root subspace for data storage (optional, for multi-tenant)
     ///   - directoryLayer: Optional custom DirectoryLayer (for test isolation)
     ///   - logger: Optional logger
     ///
-    /// **rootSubspace Parameter**:
+    /// **subspace Parameter**:
     ///
-    /// Provides namespace isolation for multi-tenant or multiple container scenarios:
-    /// - `nil` (default): Metadata stored at `[0xFE]/schema/version` (shared)
-    /// - non-nil: Metadata stored at `rootSubspace/_metadata/schema/version` (isolated)
+    /// Provides namespace isolation for multi-tenant scenarios:
+    /// - `nil` (default): Data stored at `[fdb]/R/...`, `[fdb]/I/...`
+    /// - non-nil: Data stored at `subspace/R/...`, `subspace/I/...`
     ///
     /// **DirectoryLayer Parameter**:
     ///
@@ -202,18 +206,24 @@ public final class FDBContainer: Sendable {
     /// try await FDBClient.initialize()
     /// let database = try FDBClient.openDatabase()
     ///
-    /// // Create container
+    /// // Create container with custom subspace
+    /// let tenantSubspace = Subspace(prefix: Tuple("tenant", tenantID).pack())
     /// let container = FDBContainer(
     ///     database: database,
     ///     schema: schema,
-    ///     migrations: [migration1, migration2]
+    ///     subspace: tenantSubspace
     /// )
+    ///
+    /// // Use context for data operations
+    /// let context = await container.mainContext
+    /// context.insert(user)
+    /// try await context.save()
     /// ```
     public init(
         database: any DatabaseProtocol,
         schema: Schema,
         migrations: [Migration] = [],
-        rootSubspace: Subspace? = nil,
+        subspace: Subspace? = nil,
         directoryLayer: FoundationDB.DirectoryLayer? = nil,
         logger: Logger? = nil
     ) {
@@ -221,9 +231,9 @@ public final class FDBContainer: Sendable {
         self.schema = schema
         self.configurations = []  // Empty for low-level API
         self.migrations = migrations
-        self.rootSubspace = rootSubspace
+        self._migrationPlan = nil
+        self.subspace = subspace ?? Subspace(prefix: Tuple("fdb").pack())
         self.logger = logger ?? Logger(label: "com.fdb.runtime.container")
-        self.storeCache = Mutex([:])
         self._mainContext = nil
 
         // Initialize DirectoryLayer (singleton pattern)
@@ -234,7 +244,7 @@ public final class FDBContainer: Sendable {
         }
     }
 
-    // MARK: - Main Context
+    // MARK: - Context Management
 
     /// Access the main context (SwiftData-like API)
     ///
@@ -244,8 +254,11 @@ public final class FDBContainer: Sendable {
     /// **Example**:
     /// ```swift
     /// let context = await container.mainContext
-    /// await context.insert(data: userData, for: "User", primaryKey: Tuple(123))
+    /// context.insert(user)
+    /// context.insert(order)
     /// try await context.save()
+    ///
+    /// let users = try await context.fetch(FDBFetchDescriptor<User>())
     /// ```
     @MainActor
     public var mainContext: FDBContext {
@@ -259,31 +272,29 @@ public final class FDBContainer: Sendable {
         }
     }
 
-    // MARK: - Store Management
-
-    /// Get or create FDBStore for a specific subspace
+    /// Create a new context for background operations
     ///
-    /// Stores are cached by subspace prefix to avoid creating multiple instances
-    /// for the same subspace.
+    /// Use this method when you need to perform database operations
+    /// outside the main thread, such as bulk imports or background processing.
     ///
-    /// - Parameter subspace: The subspace for the store
-    /// - Returns: FDBStore instance (cached or newly created)
-    public func store(for subspace: Subspace) -> FDBStore {
-        let cacheKey = Data(subspace.prefix)
-
-        return storeCache.withLock { cache in
-            if let existing = cache[cacheKey] {
-                return existing
-            }
-
-            let newStore = FDBStore(
-                database: database,
-                subspace: subspace,
-                logger: logger
-            )
-            cache[cacheKey] = newStore
-            return newStore
-        }
+    /// **Example**:
+    /// ```swift
+    /// let backgroundContext = container.newContext()
+    ///
+    /// Task.detached {
+    ///     // Perform bulk operations
+    ///     for data in largeDataset {
+    ///         let model = Model(from: data)
+    ///         backgroundContext.insert(model)
+    ///     }
+    ///     try await backgroundContext.save()
+    /// }
+    /// ```
+    ///
+    /// - Parameter autosaveEnabled: Whether to automatically save after operations (default: false)
+    /// - Returns: New FDBContext instance
+    public func newContext(autosaveEnabled: Bool = false) -> FDBContext {
+        return FDBContext(container: self, autosaveEnabled: autosaveEnabled)
     }
 
     // MARK: - Directory Operations
@@ -387,53 +398,23 @@ public final class FDBContainer: Sendable {
         return try await database.withTransaction(operation)
     }
 
-    // MARK: - Cache Management
-
-    /// Clear the store cache
-    ///
-    /// This forces all subsequent `store(for:)` calls to create new FDBStore instances.
-    /// Useful for testing or when subspaces are reconfigured.
-    public func clearStoreCache() {
-        storeCache.withLock { cache in
-            cache.removeAll()
-        }
-    }
-
-    /// Get the number of cached stores
-    ///
-    /// Useful for testing and monitoring.
-    ///
-    /// - Returns: Number of FDBStore instances in cache
-    public func cachedStoreCount() -> Int {
-        return storeCache.withLock { cache in
-            cache.count
-        }
-    }
-
     // MARK: - Migration Management
 
     /// Get metadata subspace for this container
     ///
-    /// **Behavior**:
-    /// - If `rootSubspace` is set: Returns `rootSubspace.subspace("_metadata")`
-    /// - If `rootSubspace` is nil: Returns `Subspace(prefix: [0xFE])` (shared)
+    /// Returns the metadata subspace under the container's root subspace.
+    /// Metadata is stored at: `[subspace]/_metadata/...`
     ///
     /// - Returns: Metadata subspace
     private func getMetadataSubspace() -> Subspace {
-        if let root = rootSubspace {
-            return root.subspace("_metadata")
-        } else {
-            return Subspace(prefix: [0xFE])  // Default: shared metadata space
-        }
+        return subspace.subspace("_metadata")
     }
 
     /// Get the current schema version from FDB
     ///
     /// Reads the schema version metadata from the database.
     ///
-    /// **Storage Location**:
-    /// - With rootSubspace: `rootSubspace/_metadata/schema/version`
-    /// - Without rootSubspace: `[0xFE]/schema/version` (shared)
+    /// **Storage Location**: `[subspace]/_metadata/schema/version`
     ///
     /// - Returns: Current schema version, or nil if no version is set
     /// - Throws: Error if version read fails
@@ -495,9 +476,7 @@ public final class FDBContainer: Sendable {
     ///
     /// Writes the schema version metadata to the database.
     ///
-    /// **Storage Location**:
-    /// - With rootSubspace: `rootSubspace/_metadata/schema/version`
-    /// - Without rootSubspace: `[0xFE]/schema/version` (shared)
+    /// **Storage Location**: `[subspace]/_metadata/schema/version`
     ///
     /// - Parameter version: Schema version to set
     /// - Throws: Error if version write fails
@@ -535,6 +514,9 @@ public final class FDBContainer: Sendable {
     /// - Parameter targetVersion: Target schema version
     /// - Throws: Error if migration fails
     public func migrate(to targetVersion: Schema.Version) async throws {
+        // 0. Validate schema before migration
+        try schema.validateIndexNames()
+
         // 1. Get current version
         guard let currentVersion = try await getCurrentSchemaVersion() else {
             // No current version: set to target version (initial setup)
@@ -554,13 +536,16 @@ public final class FDBContainer: Sendable {
         for migration in migrationPath {
             logger.info("Applying migration: \(migration.description)")
 
-            // Build store registry for migration context
-            var storeRegistry: [String: FDBStore] = [:]
+            // Build store info registry for migration context
+            var storeRegistry: [String: MigrationStoreInfo] = [:]
             for entity in schema.entities {
                 // Get or create subspace for entity
                 let entitySubspace = try await getOrOpenDirectory(path: [entity.name])
-                let store = self.store(for: entitySubspace)
-                storeRegistry[entity.name] = store
+                let info = MigrationStoreInfo(
+                    subspace: entitySubspace,
+                    indexSubspace: entitySubspace.subspace("I")
+                )
+                storeRegistry[entity.name] = info
             }
 
             // Create migration context with proper metadata subspace
@@ -610,5 +595,271 @@ public final class FDBContainer: Sendable {
         }
 
         return path
+    }
+}
+
+// MARK: - SwiftData-like API
+
+extension FDBContainer {
+    /// Initialize FDBContainer with VersionedSchema and MigrationPlan (SwiftData-like API)
+    ///
+    /// **Recommended for new applications**: This initializer provides a SwiftData-like API
+    /// for schema management and migrations.
+    ///
+    /// **Important**: FDBClient.initialize() must be called globally **before** creating FDBContainer.
+    ///
+    /// **Example**:
+    /// ```swift
+    /// // Define versioned schemas
+    /// enum AppSchemaV1: VersionedSchema {
+    ///     static let versionIdentifier = Schema.Version(1, 0, 0)
+    ///     static let models: [any Persistable.Type] = [User.self]
+    /// }
+    ///
+    /// enum AppSchemaV2: VersionedSchema {
+    ///     static let versionIdentifier = Schema.Version(2, 0, 0)
+    ///     static let models: [any Persistable.Type] = [User.self, Order.self]
+    /// }
+    ///
+    /// // Define migration plan
+    /// enum AppMigrationPlan: SchemaMigrationPlan {
+    ///     static var schemas: [any VersionedSchema.Type] {
+    ///         [AppSchemaV1.self, AppSchemaV2.self]
+    ///     }
+    ///     static var stages: [MigrationStage] {
+    ///         [MigrationStage.lightweight(fromVersion: AppSchemaV1.self, toVersion: AppSchemaV2.self)]
+    ///     }
+    /// }
+    ///
+    /// // Create container
+    /// let container = try FDBContainer(
+    ///     for: AppSchemaV2.self,
+    ///     migrationPlan: AppMigrationPlan.self
+    /// )
+    /// try await container.migrateIfNeeded()
+    /// ```
+    ///
+    /// - Parameters:
+    ///   - schema: The current VersionedSchema type
+    ///   - migrationPlan: The SchemaMigrationPlan type defining migration path
+    ///   - clusterFilePath: Optional path to cluster file
+    /// - Throws: Error if initialization fails
+    public convenience init<S: VersionedSchema, P: SchemaMigrationPlan>(
+        for schema: S.Type,
+        migrationPlan: P.Type,
+        clusterFilePath: String? = nil
+    ) throws {
+        // Validate migration plan
+        try P.validate()
+
+        // Create schema from VersionedSchema
+        let schemaInstance = S.makeSchema()
+
+        // Open database connection
+        let database = try FDBClient.openDatabase(clusterFilePath: clusterFilePath)
+
+        // Create default subspace
+        let subspace = Subspace(prefix: Tuple("fdb").pack())
+
+        // Use memberwise init pattern via internal initializer
+        self.init(
+            database: database,
+            schema: schemaInstance,
+            configurations: [],
+            migrations: [],
+            migrationPlan: migrationPlan,
+            subspace: subspace,
+            directoryLayer: database.makeDirectoryLayer(),
+            logger: Logger(label: "com.fdb.runtime.container")
+        )
+    }
+
+    /// Internal initializer with all parameters including migration plan
+    internal convenience init(
+        database: any DatabaseProtocol,
+        schema: Schema,
+        configurations: [FDBConfiguration],
+        migrations: [Migration],
+        migrationPlan: (any SchemaMigrationPlan.Type)?,
+        subspace: Subspace,
+        directoryLayer: FoundationDB.DirectoryLayer,
+        logger: Logger
+    ) {
+        self.init(
+            database: database,
+            schema: schema,
+            migrations: migrations,
+            subspace: subspace,
+            directoryLayer: directoryLayer,
+            logger: logger
+        )
+        // Note: migrationPlan is set via _setMigrationPlan after init
+        _setMigrationPlan(migrationPlan)
+    }
+
+    /// Internal method to set migration plan after initialization
+    ///
+    /// This is needed because we use a var with nonisolated(unsafe) to allow
+    /// setting during the convenience initializer chain.
+    private func _setMigrationPlan(_ plan: (any SchemaMigrationPlan.Type)?) {
+        self._migrationPlan = plan
+    }
+
+    /// Migrate to the current schema version if needed
+    ///
+    /// This method checks the current database schema version and applies
+    /// any necessary migrations to reach the current schema version.
+    ///
+    /// **Execution Flow**:
+    /// 1. Get current version from database
+    /// 2. Compare with target version from migration plan
+    /// 3. Find migration path (sequence of stages)
+    /// 4. Execute each stage in order
+    /// 5. Update version after each successful stage
+    ///
+    /// **Example**:
+    /// ```swift
+    /// let container = try FDBContainer(
+    ///     for: AppSchemaV2.self,
+    ///     migrationPlan: AppMigrationPlan.self
+    /// )
+    ///
+    /// // Run migrations
+    /// try await container.migrateIfNeeded()
+    ///
+    /// // Now safe to use the container
+    /// let context = await container.mainContext
+    /// ```
+    ///
+    /// - Throws: Error if migration fails
+    public func migrateIfNeeded() async throws {
+        guard let plan = _migrationPlan else {
+            // No migration plan - nothing to do
+            return
+        }
+
+        guard let targetVersion = plan.currentVersion else {
+            throw FDBRuntimeError.internalError("Migration plan has no schemas")
+        }
+
+        // Validate schema
+        try schema.validateIndexNames()
+
+        // Get current version
+        let currentVersion = try await getCurrentSchemaVersion()
+
+        if currentVersion == nil {
+            // New database - set initial version
+            try await setCurrentSchemaVersion(targetVersion)
+            logger.info("Set initial schema version: \(targetVersion)")
+            return
+        }
+
+        if currentVersion! >= targetVersion {
+            // Already at or past target version
+            return
+        }
+
+        // Find migration path
+        let stages = try plan.findPath(from: currentVersion!, to: targetVersion)
+
+        if stages.isEmpty {
+            return
+        }
+
+        logger.info("Starting migration from \(currentVersion!) to \(targetVersion)")
+
+        // Execute each stage
+        for stage in stages {
+            try await executeStage(stage)
+        }
+
+        logger.info("Migration complete: now at version \(targetVersion)")
+    }
+
+    /// Execute a single migration stage
+    ///
+    /// - Parameter stage: The MigrationStage to execute
+    /// - Throws: Error if stage execution fails
+    private func executeStage(_ stage: MigrationStage) async throws {
+        logger.info("Executing \(stage.migrationDescription)")
+
+        // Build store info registry
+        let storeRegistry = try await buildStoreRegistry()
+
+        // Create migration context
+        let context = MigrationContext(
+            database: database,
+            schema: schema,
+            metadataSubspace: getMetadataSubspace(),
+            storeRegistry: storeRegistry
+        )
+
+        // 1. Execute willMigrate if present
+        if let willMigrate = stage.willMigrate {
+            logger.info("Running willMigrate hook")
+            try await willMigrate(context)
+        }
+
+        // 2. Execute lightweight migration (index changes)
+        try await executeLightweightMigration(stage: stage, context: context)
+
+        // 3. Execute didMigrate if present
+        if let didMigrate = stage.didMigrate {
+            logger.info("Running didMigrate hook")
+            try await didMigrate(context)
+        }
+
+        // 4. Update version
+        try await setCurrentSchemaVersion(stage.toVersionIdentifier)
+        logger.info("Updated schema version to \(stage.toVersionIdentifier)")
+    }
+
+    /// Execute lightweight migration steps (index additions/removals)
+    ///
+    /// - Parameters:
+    ///   - stage: The migration stage
+    ///   - context: The migration context
+    /// - Throws: Error if migration fails
+    private func executeLightweightMigration(
+        stage: MigrationStage,
+        context: MigrationContext
+    ) async throws {
+        let indexChanges = stage.indexChanges
+
+        // Add new indexes
+        for descriptor in stage.addedIndexDescriptors {
+            logger.info("Adding index: \(descriptor.name)")
+            try await context.addIndex(descriptor)
+        }
+
+        // Remove old indexes
+        for indexName in indexChanges.removed {
+            logger.info("Removing index: \(indexName)")
+            // Use fromVersion as addedVersion (approximate)
+            try await context.removeIndex(
+                indexName: indexName,
+                addedVersion: stage.fromVersionIdentifier
+            )
+        }
+    }
+
+    /// Build store info registry from schema entities
+    ///
+    /// - Returns: Dictionary mapping entity names to MigrationStoreInfo
+    /// - Throws: Error if directory operations fail
+    private func buildStoreRegistry() async throws -> [String: MigrationStoreInfo] {
+        var registry: [String: MigrationStoreInfo] = [:]
+
+        for entity in schema.entities {
+            let entitySubspace = try await getOrOpenDirectory(path: [entity.name])
+            let info = MigrationStoreInfo(
+                subspace: entitySubspace,
+                indexSubspace: entitySubspace.subspace("I")
+            )
+            registry[entity.name] = info
+        }
+
+        return registry
     }
 }

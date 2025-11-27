@@ -107,6 +107,12 @@ struct MigrationTests {
         await FDBTestEnvironment.shared.ensureInitialized()
         let database = try FDBClient.openDatabase()
 
+        // Register test types with IndexBuilderRegistry
+        // This is needed because some tests create Schema manually via Schema(entities:)
+        // which doesn't trigger auto-registration
+        IndexBuilderRegistry.shared.register(TestUser.self)
+        IndexBuilderRegistry.shared.register(TestProduct.self)
+
         // Create test schema
         let schema = Schema([TestUser.self, TestProduct.self], version: Schema.Version(1, 0, 0))
 
@@ -126,7 +132,7 @@ struct MigrationTests {
         let container = FDBContainer(
             database: database,
             schema: schema,
-            rootSubspace: testSubspace,
+            subspace: testSubspace,
             directoryLayer: testDirectoryLayer
         )
 
@@ -158,7 +164,7 @@ struct MigrationTests {
             database: container.database,
             schema: schema,
             migrations: [migration1, migration2],
-            rootSubspace: container.rootSubspace
+            subspace: container.subspace
         )
 
         // Set initial version
@@ -189,7 +195,7 @@ struct MigrationTests {
             database: container.database,
             schema: schema,
             migrations: [migration1],
-            rootSubspace: container.rootSubspace
+            subspace: container.subspace
         )
 
         // Set initial version
@@ -237,10 +243,10 @@ struct MigrationTests {
             enumMetadata: [:]
         )
 
+        // Note: Schema(entities:...) now collects indexDescriptors from entities automatically.
         let schemaV2 = Schema(
             entities: [userEntity, productEntity],
-            version: Schema.Version(2, 0, 0),
-            indexDescriptors: TestUser.indexDescriptors + TestProduct.indexDescriptors + [newIndex]
+            version: Schema.Version(2, 0, 0)
         )
 
         let migration = Migration(
@@ -255,7 +261,7 @@ struct MigrationTests {
             database: container.database,
             schema: schemaV2,
             migrations: [migration],
-            rootSubspace: container.rootSubspace
+            subspace: container.subspace
         )
 
         // Set initial version
@@ -272,9 +278,9 @@ struct MigrationTests {
         // but the migration should complete without errors
     }
 
-    /// Test: MigrationContext.addIndex leaves index in writeOnly state
-    @Test("MigrationContext.addIndex leaves index in writeOnly state")
-    func addIndexLeavesWriteOnlyState() async throws {
+    /// Test: MigrationContext.addIndex builds index and transitions to readable state
+    @Test("MigrationContext.addIndex builds index and transitions to readable state")
+    func addIndexBuildsAndTransitionsToReadable() async throws {
         let (_, container) = try await setupDatabase()
 
         // Create new index
@@ -293,10 +299,10 @@ struct MigrationTests {
             enumMetadata: [:]
         )
 
+        // Note: Schema(entities:...) now collects indexDescriptors from entities automatically.
         let schemaV2 = Schema(
             entities: [userEntity],
-            version: Schema.Version(2, 0, 0),
-            indexDescriptors: TestUser.indexDescriptors + [newIndex]
+            version: Schema.Version(2, 0, 0)
         )
 
         let migration = Migration(
@@ -311,7 +317,7 @@ struct MigrationTests {
             database: container.database,
             schema: schemaV2,
             migrations: [migration],
-            rootSubspace: container.rootSubspace
+            subspace: container.subspace
         )
 
         // Set initial version
@@ -324,8 +330,8 @@ struct MigrationTests {
         let finalVersion = try await containerWithMigration.getCurrentSchemaVersion()
         #expect(finalVersion == Schema.Version(2, 0, 0))
 
-        // Note: Index should be in writeOnly state (not readable)
-        // This is the expected behavior until OnlineIndexer builds the index
+        // Index should now be in readable state after OnlineIndexer builds it
+        // The index transitions: disabled → writeOnly → readable
     }
 
     /// Test: getCurrentSchemaVersion returns nil for new database
@@ -377,10 +383,11 @@ struct MigrationTests {
             enumMetadata: [:]
         )
 
+        // Note: Schema(entities:...) now collects indexDescriptors from entities automatically.
+        // We don't need to pass them separately - entities already have their indexDescriptors.
         let schemaV2 = Schema(
             entities: [userEntity, productEntity],
-            version: Schema.Version(2, 0, 0),
-            indexDescriptors: TestUser.indexDescriptors + TestProduct.indexDescriptors + [productIndex]
+            version: Schema.Version(2, 0, 0)
         )
 
         let migration = Migration(
@@ -395,7 +402,7 @@ struct MigrationTests {
             database: container.database,
             schema: schemaV2,
             migrations: [migration],
-            rootSubspace: container.rootSubspace
+            subspace: container.subspace
         )
 
         // Set initial version
@@ -410,5 +417,219 @@ struct MigrationTests {
 
         // Note: The index should only be registered to TestProduct's store, not TestUser's
         // This verifies entity-scoped index registration
+    }
+
+    // MARK: - MigrationContext Batch Operations Tests
+
+    /// Helper type for batch operation tests (using String ID for ULID compatibility)
+    struct BatchTestUser: Persistable, Codable, Sendable {
+        static let persistableType = "BatchTestUser"
+        static let primaryKeyFields = ["id"]
+        static let allFields = ["id", "name", "status"]
+        static let indexDescriptors: [IndexDescriptor] = []
+
+        static func fieldNumber(for fieldName: String) -> Int? {
+            switch fieldName {
+            case "id": return 1
+            case "name": return 2
+            case "status": return 3
+            default: return nil
+            }
+        }
+
+        static func enumMetadata(for fieldName: String) -> EnumMetadata? {
+            return nil
+        }
+
+        var id: String
+        var name: String
+        var status: String
+
+        init(id: String = ULID().ulidString, name: String, status: String = "active") {
+            self.id = id
+            self.name = name
+            self.status = status
+        }
+
+        subscript(dynamicMember member: String) -> (any Sendable)? {
+            switch member {
+            case "id": return id
+            case "name": return name
+            case "status": return status
+            default: return nil
+            }
+        }
+    }
+
+    private func setupBatchTestDatabase() async throws -> (any DatabaseProtocol, FDBContainer) {
+        await FDBTestEnvironment.shared.ensureInitialized()
+        let database = try FDBClient.openDatabase()
+
+        // Register test type
+        IndexBuilderRegistry.shared.register(BatchTestUser.self)
+
+        let schema = Schema([BatchTestUser.self], version: Schema.Version(1, 0, 0))
+        let testSubspace = Subspace(prefix: Tuple("batch_migration_test", UUID().uuidString).pack())
+
+        let testDirectoryLayer = DirectoryLayer(
+            database: database,
+            nodeSubspace: testSubspace.subspace(0xFE),
+            contentSubspace: testSubspace
+        )
+
+        let container = FDBContainer(
+            database: database,
+            schema: schema,
+            subspace: testSubspace,
+            directoryLayer: testDirectoryLayer
+        )
+
+        return (database, container)
+    }
+
+    /// Helper to insert test records directly using DirectoryLayer
+    private func insertTestRecords(
+        _ container: FDBContainer,
+        records: [BatchTestUser]
+    ) async throws {
+        let encoder = ProtobufEncoder()
+
+        // Use the same directory approach as migration context
+        let entitySubspace = try await container.getOrOpenDirectory(path: ["BatchTestUser"])
+        let recordSubspace = entitySubspace.subspace("R").subspace("BatchTestUser")
+
+        try await container.database.withTransaction { transaction in
+            for record in records {
+                let data = try encoder.encode(record)
+                let recordKey = recordSubspace.pack(Tuple(record.id))
+                transaction.setValue(Array(data), for: recordKey)
+            }
+        }
+    }
+
+    /// Test: MigrationContext batch operations work correctly
+    ///
+    /// This test verifies update, delete, batchUpdate, and batchDelete by
+    /// directly invoking MigrationContext methods and verifying results.
+    @Test("MigrationContext batch operations work correctly")
+    func migrationContextBatchOperations() async throws {
+        let (_, container) = try await setupBatchTestDatabase()
+
+        // Create test records with predictable IDs
+        let updateId = "update-test-\(UUID().uuidString)"
+        let deleteId = "delete-test-\(UUID().uuidString)"
+        let batchUpdateIds = (1...3).map { "batch-update-\($0)-\(UUID().uuidString)" }
+        let batchDeleteIds = (1...3).map { "batch-delete-\($0)-\(UUID().uuidString)" }
+
+        // Insert all test records
+        let updateRecord = BatchTestUser(id: updateId, name: "ToUpdate", status: "active")
+        let deleteRecord = BatchTestUser(id: deleteId, name: "ToDelete", status: "active")
+        let batchUpdateRecords = batchUpdateIds.map { BatchTestUser(id: $0, name: "BatchUpdate", status: "active") }
+        let batchDeleteRecords = batchDeleteIds.map { BatchTestUser(id: $0, name: "BatchDelete", status: "active") }
+
+        try await insertTestRecords(container, records: [updateRecord, deleteRecord] + batchUpdateRecords + batchDeleteRecords)
+
+        // Create MigrationContext directly with same DirectoryLayer subspace
+        let entitySubspace = try await container.getOrOpenDirectory(path: ["BatchTestUser"])
+        let storeInfo = MigrationStoreInfo(
+            subspace: entitySubspace,
+            indexSubspace: entitySubspace.subspace("I")
+        )
+        let storeRegistry = ["BatchTestUser": storeInfo]
+
+        let context = MigrationContext(
+            database: container.database,
+            schema: container.schema,
+            metadataSubspace: container.subspace.subspace("_metadata"),
+            storeRegistry: storeRegistry
+        )
+
+        // Single update
+        var updatedRecord = BatchTestUser(id: updateId, name: "ToUpdate", status: "updated")
+        try await context.update(updatedRecord)
+
+        // Single delete
+        let recordToDelete = BatchTestUser(id: deleteId, name: "ToDelete", status: "active")
+        try await context.delete(recordToDelete)
+
+        // Batch update
+        let recordsToUpdate = batchUpdateIds.map {
+            BatchTestUser(id: $0, name: "BatchUpdate", status: "batch_updated")
+        }
+        try await context.batchUpdate(recordsToUpdate, batchSize: 2)
+
+        // Batch delete
+        let recordsToDelete = batchDeleteIds.map {
+            BatchTestUser(id: $0, name: "BatchDelete", status: "active")
+        }
+        try await context.batchDelete(recordsToDelete, batchSize: 2)
+
+        // Verify results
+        let decoder = ProtobufDecoder()
+        let recordSubspace = entitySubspace.subspace("R").subspace("BatchTestUser")
+
+        // Check single update
+        let updateKey = recordSubspace.pack(Tuple(updateId))
+        let updateData: FDB.Bytes? = try await container.database.withTransaction { tx in
+            try await tx.getValue(for: updateKey, snapshot: false)
+        }
+        #expect(updateData != nil)
+        let updatedUser = try decoder.decode(BatchTestUser.self, from: Data(updateData!))
+        #expect(updatedUser.status == "updated")
+
+        // Check single delete
+        let deleteKey = recordSubspace.pack(Tuple(deleteId))
+        let deleteData: FDB.Bytes? = try await container.database.withTransaction { tx in
+            try await tx.getValue(for: deleteKey, snapshot: false)
+        }
+        #expect(deleteData == nil)
+
+        // Check batch update
+        for id in batchUpdateIds {
+            let key = recordSubspace.pack(Tuple(id))
+            let data: FDB.Bytes? = try await container.database.withTransaction { tx in
+                try await tx.getValue(for: key, snapshot: false)
+            }
+            #expect(data != nil)
+            let user = try decoder.decode(BatchTestUser.self, from: Data(data!))
+            #expect(user.status == "batch_updated")
+        }
+
+        // Check batch delete
+        for id in batchDeleteIds {
+            let key = recordSubspace.pack(Tuple(id))
+            let data: FDB.Bytes? = try await container.database.withTransaction { tx in
+                try await tx.getValue(for: key, snapshot: false)
+            }
+            #expect(data == nil)
+        }
+    }
+
+    /// Test: MigrationContext.count counts records correctly
+    @Test("MigrationContext.count counts records correctly")
+    func migrationContextCount() async throws {
+        let (_, container) = try await setupBatchTestDatabase()
+
+        // Insert test records
+        let records = (1...7).map { BatchTestUser(name: "User \($0)") }
+        try await insertTestRecords(container, records: records)
+
+        // Create MigrationContext manually using internal API with DirectoryLayer subspace
+        let entitySubspace = try await container.getOrOpenDirectory(path: ["BatchTestUser"])
+        let storeInfo = MigrationStoreInfo(
+            subspace: entitySubspace,
+            indexSubspace: entitySubspace.subspace("I")
+        )
+        let storeRegistry = ["BatchTestUser": storeInfo]
+
+        let context = MigrationContext(
+            database: container.database,
+            schema: container.schema,
+            metadataSubspace: container.subspace.subspace("_metadata"),
+            storeRegistry: storeRegistry
+        )
+
+        let count = try await context.count(BatchTestUser.self)
+        #expect(count == 7)
     }
 }

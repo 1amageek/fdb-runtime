@@ -4,8 +4,8 @@ import Foundation
 ///
 /// This protocol defines the metadata and serialization interface for persistable data models.
 /// It is storage-independent and can be used across all data model layers:
-/// - RecordLayer (RDB-like): Structured records with primary keys
-/// - DocumentLayer (Document store): Flexible documents with auto-generated IDs
+/// - RecordLayer (RDB-like): Structured records
+/// - DocumentLayer (Document store): Flexible documents
 /// - VectorLayer (Vector search): Vector embeddings with similarity search
 /// - GraphLayer (Graph database): Nodes and edges with relationships
 ///
@@ -19,46 +19,76 @@ import Foundation
 /// ```swift
 /// @Persistable
 /// struct User {
-///     #PrimaryKey<User>([\.userID])
-///     #Index<User>([\.email])
+///     var id: String = ULID().ulidString  // Optional: auto-generated if omitted
 ///
-///     var userID: Int64
+///     #Directory<User>("users")
+///     #Index<User>([\.email], unique: true)
+///
 ///     var email: String
 ///     var name: String
 /// }
 /// ```
 ///
 /// **Generated Properties**:
+/// - `id`: Unique identifier (auto-generated ULID if not defined)
 /// - `persistableType`: Type identifier (e.g., "User")
 /// - `allFields`: All field names
 /// - `indexDescriptors`: Index metadata
-/// - `primaryKeyFields`: Primary key fields (if #PrimaryKey declared)
 ///
-/// **Layer-Specific Behavior**:
-/// - RecordLayer: `#PrimaryKey` required for relational model
-/// - DocumentLayer: `#PrimaryKey` optional, auto-generates ObjectID
-/// - VectorLayer: Typically uses `#Index<T>([\.embedding], type: VectorIndexKind(...))`
-/// - GraphLayer: Nodes and edges have separate `#PrimaryKey` declarations
+/// **ID Behavior**:
+/// - If user defines `id` field: uses that type and default value
+/// - If user omits `id` field: macro adds `var id: String = ULID().ulidString`
+/// - `id` is NOT included in the generated initializer
 @dynamicMemberLookup
 public protocol Persistable: Sendable, Codable {
+    // MARK: - ID
+
+    /// The type of the unique identifier
+    ///
+    /// **IMPORTANT**: When used with FDBRuntime (server-side), the ID type MUST also
+    /// conform to `TupleElement` for FDB key encoding. This cannot be enforced at
+    /// compile time because FDBModel is platform-independent (iOS/macOS clients).
+    ///
+    /// **Supported ID types** (conform to TupleElement):
+    /// - `String` (recommended: ULID for sortable unique IDs)
+    /// - `Int64`, `Int32`, `Int16`, `Int8`, `Int`
+    /// - `UInt64`, `UInt32`, `UInt16`, `UInt8`, `UInt`
+    /// - `UUID`
+    /// - `Double`, `Float`
+    /// - `Bool`
+    /// - `Data`, `[UInt8]`
+    ///
+    /// **Unsupported** (will cause runtime error in FDBRuntime):
+    /// - Custom structs/classes (unless they conform to TupleElement)
+    /// - Enums (unless raw value is a supported type)
+    associatedtype ID: Sendable & Hashable & Codable
+
+    /// Unique identifier for this instance
+    ///
+    /// - Auto-generated: `var id: String = ULID().ulidString`
+    /// - User-defined: Any type conforming to TupleElement
+    ///
+    /// **Important**: `id` is not included in the generated initializer.
+    /// It is always auto-initialized with its default value.
+    var id: ID { get }
+
     // MARK: - Metadata (Storage-independent)
 
     /// Type identifier for this persistable type
     ///
     /// This is the canonical name used across all layers to identify the type.
+    /// Can be customized via `@Persistable(type: "CustomName")`.
     ///
     /// **Examples**:
-    /// - RecordLayer: "User", "Product", "Order"
-    /// - DocumentLayer: "Article", "Comment"
-    /// - VectorLayer: "Embedding", "Document"
-    /// - GraphLayer: "Person", "Relationship"
+    /// - Default: struct name (e.g., "User", "Product")
+    /// - Custom: `@Persistable(type: "User")` on a `Member` struct
     static var persistableType: String { get }
 
     /// All field names in the persistable type
     ///
-    /// Includes all stored properties, in declaration order.
+    /// Includes all stored properties (including `id`), in declaration order.
     ///
-    /// **Example**: `["userID", "email", "name", "createdAt"]`
+    /// **Example**: `["id", "email", "name", "createdAt"]`
     static var allFields: [String] { get }
 
     /// Index descriptors for this persistable type
@@ -68,7 +98,6 @@ public protocol Persistable: Sendable, Codable {
     /// **Example**:
     /// ```swift
     /// #Index<User>([\.email], type: ScalarIndexKind(), unique: true)
-    /// #Index<Product>([\.embedding], type: VectorIndexKind(dimensions: 384))
     /// ```
     static var indexDescriptors: [IndexDescriptor] { get }
 
@@ -101,11 +130,10 @@ public protocol Persistable: Sendable, Codable {
     /// ```swift
     /// @Persistable
     /// struct User {
-    ///     var userID: Int64
     ///     var email: String
     /// }
     ///
-    /// let user = User(userID: 123, email: "user@example.com")
+    /// let user = User(email: "user@example.com")
     /// let email = user[dynamicMember: "email"]  // Optional<any Sendable>
     /// ```
     ///
@@ -125,4 +153,20 @@ public extension Persistable {
 
     /// Default implementation returns nil (no enum metadata)
     static func enumMetadata(for fieldName: String) -> EnumMetadata? { nil }
+
+    /// Register this type for index building during migrations (optional)
+    ///
+    /// **Default Implementation**: Does nothing.
+    ///
+    /// **Note**: This method is provided for backward compatibility and advanced
+    /// use cases. The primary index building flow uses `_EntityIndexBuildable`
+    /// protocol, which automatically works for all `Persistable & Codable` types.
+    ///
+    /// **FDBIndexing Override**: For `Persistable & Codable` types,
+    /// FDBIndexing provides a specialized implementation that registers
+    /// the type with `IndexBuilderRegistry` for optional manual registry usage.
+    static func registerForIndexBuilding() {
+        // Default: do nothing
+        // FDBIndexing provides specialized implementation for Codable types
+    }
 }
