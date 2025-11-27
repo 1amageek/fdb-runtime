@@ -136,7 +136,9 @@ public struct PersistableMacro: MemberMacro, ExtensionMacro {
         }
 
         // Extract #Index macro calls and generate IndexDescriptors
+        // Also collect all keyPath strings for fieldName(for:) generation
         var indexDescriptors: [String] = []
+        var allIndexKeyPaths: Set<String> = []  // Collect all keyPaths for fieldName generation
 
         for member in structDecl.memberBlock.members {
             if let macroDecl = member.decl.as(MacroExpansionDeclSyntax.self),
@@ -153,10 +155,21 @@ public struct PersistableMacro: MemberMacro, ExtensionMacro {
                     if arg.label == nil {
                         if let arrayExpr = arg.expression.as(ArrayExprSyntax.self) {
                             for element in arrayExpr.elements {
-                                if let keyPathExpr = element.expression.as(KeyPathExprSyntax.self),
-                                   let component = keyPathExpr.components.first,
-                                   let property = component.component.as(KeyPathPropertyComponentSyntax.self) {
-                                    keyPaths.append(property.declName.baseName.text)
+                                if let keyPathExpr = element.expression.as(KeyPathExprSyntax.self) {
+                                    // Extract ALL components from the KeyPath (supports nested fields)
+                                    // e.g., \.address.city → "address.city"
+                                    var pathComponents: [String] = []
+                                    for component in keyPathExpr.components {
+                                        if let property = component.component.as(KeyPathPropertyComponentSyntax.self) {
+                                            pathComponents.append(property.declName.baseName.text)
+                                        }
+                                    }
+                                    if !pathComponents.isEmpty {
+                                        // Join with dot for nested paths: ["address", "city"] → "address.city"
+                                        let keyPathString = pathComponents.joined(separator: ".")
+                                        keyPaths.append(keyPathString)
+                                        allIndexKeyPaths.insert(keyPathString)
+                                    }
                                 }
                             }
                         }
@@ -183,17 +196,20 @@ public struct PersistableMacro: MemberMacro, ExtensionMacro {
                 guard !keyPaths.isEmpty else { continue }
 
                 // Generate index name if not provided
-                let finalIndexName = indexName ?? "\(typeName)_\(keyPaths.joined(separator: "_"))"
+                // Replace dots with underscores for nested paths: "address.city" → "address_city"
+                let flattenedKeyPaths = keyPaths.map { $0.replacingOccurrences(of: ".", with: "_") }
+                let finalIndexName = indexName ?? "\(typeName)_\(flattenedKeyPaths.joined(separator: "_"))"
 
-                // Generate IndexDescriptor initialization
-                let keyPathsArray = "[\(keyPaths.map { "\"\($0)\"" }.joined(separator: ", "))]"
+                // Generate IndexDescriptor initialization with KeyPaths
+                // e.g., [\User.email, \User.address.city]
+                let keyPathsLiterals = keyPaths.map { "\\\(structName).\($0)" }.joined(separator: ", ")
                 let kindInit = indexKindExpr ?? "ScalarIndexKind()"
                 let optionsInit = isUnique ? ".init(unique: true)" : ".init()"
 
                 let descriptorInit = """
                     IndexDescriptor(
                         name: "\(finalIndexName)",
-                        keyPaths: \(keyPathsArray),
+                        keyPaths: [\(keyPathsLiterals)],
                         kind: \(kindInit),
                         commonOptions: \(optionsInit)
                     )
@@ -286,6 +302,52 @@ public struct PersistableMacro: MemberMacro, ExtensionMacro {
             }
             """
         decls.append(subscriptDecl)
+
+        // Generate fieldName(for:) methods for KeyPath → String conversion
+        // Include top-level fields and all indexed keyPaths (including nested)
+        var fieldNameCases: [String] = []
+
+        // Add top-level fields
+        for fieldInfo in fieldInfos {
+            fieldNameCases.append("if keyPath == \\\(structName).\(fieldInfo.name) { return \"\(fieldInfo.name)\" }")
+        }
+
+        // Add nested keyPaths from #Index declarations
+        for keyPathStr in allIndexKeyPaths.sorted() {
+            // Skip top-level fields (already added)
+            if !keyPathStr.contains(".") { continue }
+            fieldNameCases.append("if keyPath == \\\(structName).\(keyPathStr) { return \"\(keyPathStr)\" }")
+        }
+
+        let fieldNameBody = fieldNameCases.joined(separator: "\n        ")
+
+        let fieldNameDecl: DeclSyntax = """
+            public static func fieldName<Value>(for keyPath: KeyPath<\(raw: structName), Value>) -> String {
+                \(raw: fieldNameBody)
+                return "\\(keyPath)"
+            }
+            """
+        decls.append(fieldNameDecl)
+
+        // Generate PartialKeyPath version
+        let partialFieldNameDecl: DeclSyntax = """
+            public static func fieldName(for keyPath: PartialKeyPath<\(raw: structName)>) -> String {
+                \(raw: fieldNameBody)
+                return "\\(keyPath)"
+            }
+            """
+        decls.append(partialFieldNameDecl)
+
+        // Generate AnyKeyPath version (for type-erased usage)
+        let anyFieldNameDecl: DeclSyntax = """
+            public static func fieldName(for keyPath: AnyKeyPath) -> String {
+                if let partialKeyPath = keyPath as? PartialKeyPath<\(raw: structName)> {
+                    return fieldName(for: partialKeyPath)
+                }
+                return "\\(keyPath)"
+            }
+            """
+        decls.append(anyFieldNameDecl)
 
         // Generate init without `id` parameter
         // Only include fields that are NOT `id`

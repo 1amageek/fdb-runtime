@@ -64,11 +64,15 @@ public struct DataAccess: Sendable {
     ///
     /// **Field Name Format**:
     /// - Simple field: "email", "price"
-    /// - Nested field: "user.address.city" (dot notation)
+    /// - Nested field: "address.city", "user.profile.name" (dot notation)
+    ///
+    /// **Nested Field Support**:
+    /// Nested fields are accessed using Mirror reflection. The path is split by "."
+    /// and each component is traversed to reach the final value.
     ///
     /// - Parameters:
     ///   - item: The item to extract from
-    ///   - keyPath: The field name (supports dot notation)
+    ///   - keyPath: The field name or dot-notation path (e.g., "email", "address.city")
     /// - Returns: Array of tuple elements (typically single element)
     /// - Throws: Error if field not found or type conversion fails
     public static func extractField<Item: Persistable>(
@@ -77,15 +81,11 @@ public struct DataAccess: Sendable {
     ) throws -> [any TupleElement] {
         // Handle nested keyPaths (e.g., "user.address.city")
         if keyPath.contains(".") {
-            // For now, throw error for nested fields
-            // Full implementation would traverse nested subscripts
-            throw DataAccessError.nestedFieldsNotSupported(
-                itemType: Item.persistableType,
-                keyPath: keyPath
-            )
+            let components = keyPath.split(separator: ".").map(String.init)
+            return try extractNestedField(from: item, components: components, fullPath: keyPath)
         }
 
-        // Use Persistable's subscript
+        // Use Persistable's subscript for top-level fields
         guard let value = item[dynamicMember: keyPath] else {
             throw DataAccessError.fieldNotFound(
                 itemType: Item.persistableType,
@@ -95,6 +95,75 @@ public struct DataAccess: Sendable {
 
         // Convert to TupleElement
         return try convertToTupleElements(value)
+    }
+
+    /// Extract a nested field value using Mirror reflection
+    ///
+    /// - Parameters:
+    ///   - item: The root item to extract from
+    ///   - components: Path components (e.g., ["address", "city"])
+    ///   - fullPath: Full dot-notation path for error messages
+    /// - Returns: Array of tuple elements
+    /// - Throws: Error if field not found at any level
+    private static func extractNestedField<Item: Persistable>(
+        from item: Item,
+        components: [String],
+        fullPath: String
+    ) throws -> [any TupleElement] {
+        guard !components.isEmpty else {
+            throw DataAccessError.fieldNotFound(
+                itemType: Item.persistableType,
+                keyPath: fullPath
+            )
+        }
+
+        var currentValue: Any = item
+        var traversedPath: [String] = []
+
+        for component in components {
+            traversedPath.append(component)
+
+            // Try Persistable subscript first (for top-level on Persistable types)
+            if let persistable = currentValue as? any Persistable,
+               let value = persistable[dynamicMember: component] {
+                currentValue = value
+                continue
+            }
+
+            // Fall back to Mirror reflection for nested structs
+            let mirror = Mirror(reflecting: currentValue)
+            var found = false
+
+            for child in mirror.children {
+                if child.label == component {
+                    // Handle Optional values
+                    if let optional = child.value as? (any _OptionalProtocol) {
+                        if optional._isNil {
+                            throw DataAccessError.nilValueCannotBeIndexed
+                        }
+                        if let unwrapped = optional._unwrappedAny {
+                            currentValue = unwrapped
+                        } else {
+                            throw DataAccessError.nilValueCannotBeIndexed
+                        }
+                    } else {
+                        currentValue = child.value
+                    }
+                    found = true
+                    break
+                }
+            }
+
+            if !found {
+                throw DataAccessError.fieldNotFound(
+                    itemType: Item.persistableType,
+                    keyPath: traversedPath.joined(separator: ".")
+                )
+            }
+        }
+
+        // Convert final value to TupleElement
+        return try convertAnyToTupleElements(currentValue)
     }
 
     /// Extract id from an item using the id expression
@@ -315,14 +384,25 @@ private struct DataAccessEvaluator<Item: Persistable>: KeyExpressionVisitor {
     }
 
     func visitNest(_ parentField: String, _ child: KeyExpression) throws -> [any TupleElement] {
-        // For simple cases, combine parent and child with dot notation
+        // Build the full nested path by recursively flattening the expression
+        let fullPath = buildNestedPath(parentField: parentField, child: child)
+        return try DataAccess.extractField(from: item, keyPath: fullPath)
+    }
+
+    /// Build a dot-notation path from nested expressions
+    private func buildNestedPath(parentField: String, child: KeyExpression) -> String {
         if let fieldExpr = child as? FieldKeyExpression {
-            let nestedPath = "\(parentField).\(fieldExpr.fieldName)"
-            return try DataAccess.extractField(from: item, keyPath: nestedPath)
+            return "\(parentField).\(fieldExpr.fieldName)"
         }
 
-        // For other cases, delegate to child's accept method
-        return try child.accept(visitor: self)
+        if let nestExpr = child as? NestExpression {
+            let childPath = buildNestedPath(parentField: nestExpr.parentField, child: nestExpr.child)
+            return "\(parentField).\(childPath)"
+        }
+
+        // For other expression types, just use the parent field
+        // (this shouldn't happen in normal usage)
+        return parentField
     }
 }
 
@@ -349,7 +429,12 @@ extension Optional: _OptionalProtocol {
 /// Errors that can occur during DataAccess operations
 public enum DataAccessError: Error, CustomStringConvertible {
     case fieldNotFound(itemType: String, keyPath: String)
+
+    /// **Deprecated**: Nested fields are now supported via Mirror reflection.
+    /// This error is kept for backward compatibility but should not be thrown.
+    @available(*, deprecated, message: "Nested fields are now supported")
     case nestedFieldsNotSupported(itemType: String, keyPath: String)
+
     case rangeFieldsNotSupported(itemType: String, suggestion: String)
     case reconstructionNotSupported(itemType: String, suggestion: String)
     case typeMismatch(itemType: String, keyPath: String, expected: String, actual: String)
@@ -362,7 +447,7 @@ public enum DataAccessError: Error, CustomStringConvertible {
         case .fieldNotFound(let itemType, let keyPath):
             return "Field '\(keyPath)' not found in \(itemType)"
         case .nestedFieldsNotSupported(let itemType, let keyPath):
-            return "Nested field '\(keyPath)' not supported for \(itemType). Only top-level fields are currently supported."
+            return "Nested field '\(keyPath)' error for \(itemType). Note: Nested fields are now supported - this error should not occur."
         case .rangeFieldsNotSupported(let itemType, let suggestion):
             return "Range fields not supported for \(itemType). \(suggestion)"
         case .reconstructionNotSupported(let itemType, let suggestion):

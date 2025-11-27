@@ -47,7 +47,7 @@ import Foundation
 /// - If user defines `id` field: uses that type and default value
 /// - If user omits `id` field: macro adds `var id: String = ULID().ulidString`
 /// - `id` is NOT included in the generated initializer
-@attached(member, names: named(id), named(persistableType), named(allFields), named(indexDescriptors), named(fieldNumber), named(enumMetadata), named(subscript), named(init))
+@attached(member, names: named(id), named(persistableType), named(allFields), named(indexDescriptors), named(fieldNumber), named(enumMetadata), named(subscript), named(init), named(fieldName))
 @attached(extension, conformances: Persistable, Codable, Sendable)
 public macro Persistable() = #externalMacro(module: "FDBModelMacros", type: "PersistableMacro")
 
@@ -61,7 +61,7 @@ public macro Persistable() = #externalMacro(module: "FDBModelMacros", type: "Per
 /// }
 /// // persistableType = "User"
 /// ```
-@attached(member, names: named(id), named(persistableType), named(allFields), named(indexDescriptors), named(fieldNumber), named(enumMetadata), named(subscript), named(init))
+@attached(member, names: named(id), named(persistableType), named(allFields), named(indexDescriptors), named(fieldNumber), named(enumMetadata), named(subscript), named(init), named(fieldName))
 @attached(extension, conformances: Persistable, Codable, Sendable)
 public macro Persistable(type: String) = #externalMacro(module: "FDBModelMacros", type: "PersistableMacro")
 

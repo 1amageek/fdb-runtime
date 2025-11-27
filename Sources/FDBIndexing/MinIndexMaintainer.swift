@@ -95,6 +95,18 @@ public struct MinIndexMaintainer<Item: Persistable>: IndexMaintainer {
         transaction.setValue([], for: key)
     }
 
+    /// Compute expected index keys for an item (for scrubber verification)
+    ///
+    /// For min indexes, returns the index key that should exist for this item.
+    /// Min indexes store per-item entries (unlike Count/Sum aggregations),
+    /// so scrubber can verify exact entries.
+    public func computeIndexKeys(
+        for item: Item,
+        id: Tuple
+    ) async throws -> [FDB.Bytes] {
+        return [try buildIndexKey(for: item, id: id)]
+    }
+
     // MARK: - Private
 
     /// Build index key for an item

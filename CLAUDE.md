@@ -1167,6 +1167,116 @@ All data is organized under a root subspace with two main sections:
 - Swift tools version: 6.2
 - Swift 6 language mode enabled for all targets
 
+## Observability and Statistics
+
+### Metrics (swift-metrics)
+
+FDBIndexing uses [swift-metrics](https://github.com/apple/swift-metrics) for observability:
+
+**OnlineIndexer Metrics**:
+- `fdb_indexer_items_indexed_total` - Counter for items indexed
+- `fdb_indexer_batches_processed_total` - Counter for batches processed
+- `fdb_indexer_batch_duration_seconds` - Timer for batch duration
+- `fdb_indexer_errors_total` - Counter for errors
+
+**OnlineIndexScrubber Metrics**:
+- `fdb_scrubber_entries_scanned_total` - Counter for index entries scanned
+- `fdb_scrubber_items_scanned_total` - Counter for items scanned
+- `fdb_scrubber_dangling_entries_total` - Counter for dangling entries detected
+- `fdb_scrubber_missing_entries_total` - Counter for missing entries detected
+- `fdb_scrubber_entries_repaired_total` - Counter for entries repaired
+- `fdb_scrubber_duration_seconds` - Timer for scrub duration
+- `fdb_scrubber_errors_total` - Counter for errors
+
+**FDBDataStore Metrics** (internal via DataStoreDelegate):
+- `fdb_datastore_operations_total` - Counter for operations (save/fetch/delete)
+- `fdb_datastore_operation_duration_seconds` - Timer for operation duration
+- `fdb_datastore_items_total` - Counter for items processed
+
+### OnlineIndexScrubber
+
+Index consistency verification and repair tool:
+
+```swift
+let scrubber = OnlineIndexScrubber<User>(
+    database: database,
+    itemSubspace: itemSubspace,
+    indexSubspace: indexSubspace,
+    itemType: "User",
+    index: emailIndex,
+    indexMaintainer: emailIndexMaintainer,
+    configuration: .default  // or .conservative, .aggressive
+)
+
+// Run scrubbing (detection only by default)
+let result = try await scrubber.scrubIndex()
+
+if result.isHealthy {
+    print("Index is healthy")
+} else {
+    print("Issues found: \(result.summary.issuesDetected)")
+}
+```
+
+**Two-Phase Scanning**:
+1. **Phase 1 (Index → Item)**: Detects dangling entries (index entries without items)
+2. **Phase 2 (Item → Index)**: Detects missing entries (items without index entries)
+
+**Configuration Presets**:
+- `.default` - Balanced settings (1,000 entries/batch, no repair)
+- `.conservative` - Production environments (100 entries/batch, throttling)
+- `.aggressive` - Maintenance windows (10,000 entries/batch, repair enabled)
+
+### HyperLogLog (Cardinality Estimation)
+
+Probabilistic cardinality estimation using HyperLogLog algorithm:
+
+```swift
+import FDBModel
+
+var hll = HyperLogLog()
+
+// Add values
+for user in users {
+    hll.add(.string(user.email))
+}
+
+// Get estimated cardinality
+let uniqueCount = hll.cardinality()
+print("Estimated unique emails: ~\(uniqueCount)")  // ±2% accuracy
+
+// Merge estimators (for distributed counting)
+var hll2 = HyperLogLog()
+// ... add values
+hll.merge(hll2)
+```
+
+**Properties**:
+- ~16KB memory (16,384 registers)
+- ±2% accuracy (standard error: 0.81%)
+- Codable for persistence
+
+### FieldValue
+
+Type-safe enum for comparable field values:
+
+```swift
+import FDBModel
+
+let intValue = FieldValue.int64(42)
+let strValue = FieldValue.string("hello")
+let nullValue = FieldValue.null
+
+// Comparison
+if intValue < FieldValue.int64(100) { }
+
+// Used by HyperLogLog
+var hll = HyperLogLog()
+hll.add(intValue)
+```
+
+**Supported Types**: `int64`, `double`, `string`, `bool`, `data`, `null`
+
 ## Testing Notes
 
 ### Test Structure
@@ -1763,6 +1873,8 @@ This architecture enables **composable data models** where a single FDBStore han
 - IndexDescriptor: `Sources/FDBModel/IndexDescriptor.swift`
 - TypeValidation: `Sources/FDBModel/TypeValidation.swift`
 - ULID implementation: `Sources/FDBModel/ULID.swift`
+- HyperLogLog: `Sources/FDBModel/HyperLogLog.swift`
+- FieldValue: `Sources/FDBModel/FieldValue.swift`
 - Macro implementation: `Sources/FDBModelMacros/PersistableMacro.swift`
 
 ### FDBCore (FDB-independent, all platforms)
@@ -1786,12 +1898,16 @@ This architecture enables **composable data models** where a single FDBStore han
 - Index: `Sources/FDBIndexing/Index.swift`
 - IndexManager: `Sources/FDBIndexing/IndexManager.swift`
 - OnlineIndexer: `Sources/FDBIndexing/OnlineIndexer.swift`
+- OnlineIndexScrubber: `Sources/FDBIndexing/OnlineIndexScrubber.swift`
+- ScrubberTypes: `Sources/FDBIndexing/ScrubberTypes.swift`
+- RangeSet: `Sources/FDBIndexing/RangeSet.swift`
 
 ### FDBRuntime (FDB-dependent, server only)
-- FDBStore: `Sources/FDBRuntime/FDBStore.swift`
+- FDBDataStore: `Sources/FDBRuntime/FDBDataStore.swift`
 - FDBContainer: `Sources/FDBRuntime/FDBContainer.swift`
 - FDBContext: `Sources/FDBRuntime/FDBContext.swift`
 - ID validation: `Sources/FDBRuntime/IDValidation.swift`
+- Internal metrics delegate: `Sources/FDBRuntime/Internal/DataStoreDelegate.swift`, `Sources/FDBRuntime/Internal/MetricsDataStoreDelegate.swift`
 
 ### Documentation
 - ID design: `docs/ID-DESIGN.md`

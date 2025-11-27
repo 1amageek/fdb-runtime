@@ -113,6 +113,21 @@ public struct CountIndexMaintainer<Item: Persistable>: IndexMaintainer {
         transaction.atomicOp(key: key, param: increment, mutationType: .add)
     }
 
+    /// Compute expected index keys for an item (for scrubber verification)
+    ///
+    /// For count indexes, returns the group key that this item contributes to.
+    ///
+    /// **Note**: Aggregation indexes (Count/Sum/Min/Max) store aggregated values,
+    /// not per-item entries. Scrubber can verify the key exists but cannot
+    /// verify the exact count value without full re-scan. Use `allowRepair=false`
+    /// for detection only, or use `rebuildIndex()` for full rebuild.
+    public func computeIndexKeys(
+        for item: Item,
+        id: Tuple
+    ) async throws -> [FDB.Bytes] {
+        return [try buildGroupKey(for: item)]
+    }
+
     // MARK: - Private
 
     /// Build grouping key for an item

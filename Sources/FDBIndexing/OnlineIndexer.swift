@@ -80,17 +80,17 @@ public final class OnlineIndexer<Item: Persistable>: Sendable {
 
     // MARK: - Metrics
 
-    /// Counter for total batches processed
-    private let batchCounter: Counter
+    /// Counter for items indexed
+    private let itemsIndexedCounter: Counter
 
-    /// Timer for batch processing duration
-    private let batchTimer: Timer
+    /// Counter for batches processed
+    private let batchesProcessedCounter: Counter
 
-    /// Gauge for current progress (0.0 - 1.0)
-    private let progressGauge: Gauge
+    /// Timer for batch duration
+    private let batchDurationTimer: Metrics.Timer
 
-    /// Counter for items processed
-    private let itemsProcessedCounter: Counter
+    /// Counter for errors
+    private let errorsCounter: Counter
 
     // MARK: - Initialization
 
@@ -131,6 +131,29 @@ public final class OnlineIndexer<Item: Persistable>: Sendable {
         self.progressKey = indexSubspace
             .subspace("_progress")
             .pack(Tuple(index.name))
+
+        // Initialize metrics with index-specific dimensions
+        let baseDimensions: [(String, String)] = [
+            ("index", index.name),
+            ("item_type", itemType)
+        ]
+
+        self.itemsIndexedCounter = Counter(
+            label: "fdb_indexer_items_indexed_total",
+            dimensions: baseDimensions
+        )
+        self.batchesProcessedCounter = Counter(
+            label: "fdb_indexer_batches_processed_total",
+            dimensions: baseDimensions
+        )
+        self.batchDurationTimer = Metrics.Timer(
+            label: "fdb_indexer_batch_duration_seconds",
+            dimensions: baseDimensions
+        )
+        self.errorsCounter = Counter(
+            label: "fdb_indexer_errors_total",
+            dimensions: baseDimensions
+        )
     }
 
     // MARK: - Public API
@@ -215,34 +238,51 @@ public final class OnlineIndexer<Item: Persistable>: Sendable {
                 break
             }
 
-            // Process batch in transaction
-            try await database.withTransaction { transaction in
-                let sequence = transaction.getRange(
-                    beginSelector: .firstGreaterOrEqual(batchRange.begin),
-                    endSelector: .firstGreaterOrEqual(batchRange.end),
-                    snapshot: false
-                )
+            let batchStartTime = DispatchTime.now()
+            var itemsInBatch = 0
 
-                for try await (key, value) in sequence {
-                    // Deserialize item using DataAccess static method
-                    let item: Item = try DataAccess.deserialize(value)
-
-                    // Extract id
-                    let id = try itemTypeSubspace.unpack(key)
-
-                    // Call IndexMaintainer to build index entry
-                    try await indexMaintainer.scanItem(
-                        item,
-                        id: id,
-                        transaction: transaction
+            do {
+                // Process batch in transaction
+                try await database.withTransaction { transaction in
+                    let sequence = transaction.getRange(
+                        beginSelector: .firstGreaterOrEqual(batchRange.begin),
+                        endSelector: .firstGreaterOrEqual(batchRange.end),
+                        snapshot: false
                     )
+
+                    for try await (key, value) in sequence {
+                        // Deserialize item using DataAccess static method
+                        let item: Item = try DataAccess.deserialize(value)
+
+                        // Extract id
+                        let id = try itemTypeSubspace.unpack(key)
+
+                        // Call IndexMaintainer to build index entry
+                        try await indexMaintainer.scanItem(
+                            item,
+                            id: id,
+                            transaction: transaction
+                        )
+
+                        itemsInBatch += 1
+                    }
+
+                    // Mark batch as completed
+                    rangeSet.markCompleted(batchRange)
+
+                    // Save progress
+                    try saveProgress(rangeSet, transaction)
                 }
 
-                // Mark batch as completed
-                rangeSet.markCompleted(batchRange)
+                // Record metrics
+                let batchDuration = DispatchTime.now().uptimeNanoseconds - batchStartTime.uptimeNanoseconds
+                batchDurationTimer.recordNanoseconds(Int64(batchDuration))
+                batchesProcessedCounter.increment()
+                itemsIndexedCounter.increment(by: itemsInBatch)
 
-                // Save progress
-                try saveProgress(rangeSet, transaction)
+            } catch {
+                errorsCounter.increment()
+                throw error
             }
 
             // Throttle if configured

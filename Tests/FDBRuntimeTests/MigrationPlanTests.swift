@@ -6,6 +6,40 @@ import FDBModel
 @testable import FDBCore
 @testable import FDBIndexing
 
+// MARK: - Test Models (File Scope for @Persistable macro)
+
+/// V1: Basic user with email index
+@Persistable(type: "TestUser")
+struct UserV1 {
+    #Index<UserV1>([\.email], type: ScalarIndexKind(), unique: true, name: "TestUser_email")
+
+    var name: String
+    var email: String
+}
+
+/// V2: User with additional age field and index
+@Persistable(type: "TestUser")
+struct UserV2 {
+    #Index<UserV2>([\.email], type: ScalarIndexKind(), unique: true, name: "TestUser_email")
+    #Index<UserV2>([\.age], type: ScalarIndexKind(), name: "TestUser_age")
+
+    var name: String
+    var email: String
+    var age: Int = 0
+}
+
+/// V3: User with removed age index, added createdAt
+@Persistable(type: "TestUser")
+struct UserV3 {
+    #Index<UserV3>([\.email], type: ScalarIndexKind(), unique: true, name: "TestUser_email")
+    #Index<UserV3>([\.createdAt], type: ScalarIndexKind(), name: "TestUser_createdAt")
+
+    var name: String
+    var email: String
+    var age: Int = 0
+    var createdAt: Double = 0
+}
+
 /// Tests for SwiftData-like Migration API
 ///
 /// **Coverage**:
@@ -22,168 +56,18 @@ struct MigrationPlanTests {
     enum TestSchemaV1: VersionedSchema {
         static let versionIdentifier = Schema.Version(1, 0, 0)
         static let models: [any Persistable.Type] = [UserV1.self]
-
-        struct UserV1: Persistable, Codable, Sendable {
-            typealias ID = String
-
-            var id: String = ULID().ulidString
-
-            static let persistableType = "TestUser"
-            static let allFields = ["id", "name", "email"]
-
-            static let indexDescriptors: [IndexDescriptor] = [
-                IndexDescriptor(
-                    name: "TestUser_email",
-                    keyPaths: ["email"],
-                    kind: ScalarIndexKind(),
-                    commonOptions: .init(unique: true)
-                )
-            ]
-
-            static func fieldNumber(for fieldName: String) -> Int? {
-                switch fieldName {
-                case "id": return 1
-                case "name": return 2
-                case "email": return 3
-                default: return nil
-                }
-            }
-
-            static func enumMetadata(for fieldName: String) -> EnumMetadata? {
-                return nil
-            }
-
-            var name: String
-            var email: String
-
-            subscript(dynamicMember member: String) -> (any Sendable)? {
-                switch member {
-                case "id": return id
-                case "name": return name
-                case "email": return email
-                default: return nil
-                }
-            }
-        }
     }
 
     /// Schema V2: User with additional age field and index
     enum TestSchemaV2: VersionedSchema {
         static let versionIdentifier = Schema.Version(2, 0, 0)
         static let models: [any Persistable.Type] = [UserV2.self]
-
-        struct UserV2: Persistable, Codable, Sendable {
-            typealias ID = String
-
-            var id: String = ULID().ulidString
-
-            static let persistableType = "TestUser"
-            static let allFields = ["id", "name", "email", "age"]
-
-            static let indexDescriptors: [IndexDescriptor] = [
-                IndexDescriptor(
-                    name: "TestUser_email",
-                    keyPaths: ["email"],
-                    kind: ScalarIndexKind(),
-                    commonOptions: .init(unique: true)
-                ),
-                IndexDescriptor(
-                    name: "TestUser_age",
-                    keyPaths: ["age"],
-                    kind: ScalarIndexKind(),
-                    commonOptions: .init()
-                )
-            ]
-
-            static func fieldNumber(for fieldName: String) -> Int? {
-                switch fieldName {
-                case "id": return 1
-                case "name": return 2
-                case "email": return 3
-                case "age": return 4
-                default: return nil
-                }
-            }
-
-            static func enumMetadata(for fieldName: String) -> EnumMetadata? {
-                return nil
-            }
-
-            var name: String
-            var email: String
-            var age: Int = 0
-
-            subscript(dynamicMember member: String) -> (any Sendable)? {
-                switch member {
-                case "id": return id
-                case "name": return name
-                case "email": return email
-                case "age": return age
-                default: return nil
-                }
-            }
-        }
     }
 
     /// Schema V3: User with removed age index, added createdAt
     enum TestSchemaV3: VersionedSchema {
         static let versionIdentifier = Schema.Version(3, 0, 0)
         static let models: [any Persistable.Type] = [UserV3.self]
-
-        struct UserV3: Persistable, Codable, Sendable {
-            typealias ID = String
-
-            var id: String = ULID().ulidString
-
-            static let persistableType = "TestUser"
-            static let allFields = ["id", "name", "email", "age", "createdAt"]
-
-            static let indexDescriptors: [IndexDescriptor] = [
-                IndexDescriptor(
-                    name: "TestUser_email",
-                    keyPaths: ["email"],
-                    kind: ScalarIndexKind(),
-                    commonOptions: .init(unique: true)
-                ),
-                IndexDescriptor(
-                    name: "TestUser_createdAt",
-                    keyPaths: ["createdAt"],
-                    kind: ScalarIndexKind(),
-                    commonOptions: .init()
-                )
-            ]
-
-            static func fieldNumber(for fieldName: String) -> Int? {
-                switch fieldName {
-                case "id": return 1
-                case "name": return 2
-                case "email": return 3
-                case "age": return 4
-                case "createdAt": return 5
-                default: return nil
-                }
-            }
-
-            static func enumMetadata(for fieldName: String) -> EnumMetadata? {
-                return nil
-            }
-
-            var name: String
-            var email: String
-            var age: Int = 0
-            var createdAt: Double = 0
-
-            subscript(dynamicMember member: String) -> (any Sendable)? {
-                switch member {
-                case "id": return id
-                case "name": return name
-                case "email": return email
-                case "age": return age
-                case "createdAt": return createdAt
-                default: return nil
-                }
-            }
-        }
     }
 
     // MARK: - Test Migration Plans

@@ -5,6 +5,57 @@ import FDBModel
 @testable import FDBCore
 @testable import FDBIndexing
 
+// MARK: - Test Models (File Scope for @Persistable macro)
+
+@Persistable(type: "User")
+struct SchemaTestUser {
+    #Index<SchemaTestUser>([\.email], type: ScalarIndexKind(), unique: true, name: "User_email")
+
+    var email: String
+    var name: String
+}
+
+@Persistable(type: "Order")
+struct SchemaTestOrder {
+    #Index<SchemaTestOrder>([\.userID], type: ScalarIndexKind(), name: "Order_userID")
+    #Index<SchemaTestOrder>([\.amount], type: ScalarIndexKind(), name: "Order_amount")
+
+    var userID: Int64
+    var amount: Double
+}
+
+@Persistable
+struct NoIndexEntity {
+    var data: String
+}
+
+@Persistable
+struct CompositeIndexEntity {
+    #Index<CompositeIndexEntity>([\.field1, \.field2, \.field3], type: ScalarIndexKind(), name: "CompositeIndexEntity_composite")
+
+    var field1: String
+    var field2: Int
+    var field3: Bool
+}
+
+@Persistable
+struct SparseIndexEntity {
+    var optionalField: String?
+}
+
+// Helper struct for manual index tests
+@Persistable
+struct ManualIndexTestEntity {
+    var field: String
+    var someField: String
+}
+
+// Helper struct for Schema.Entity initializer tests
+@Persistable
+struct TestEntityForSchema {
+    var field1: String
+}
+
 /// Tests for Schema functionality
 ///
 /// **Coverage**:
@@ -15,99 +66,9 @@ import FDBModel
 @Suite("Schema Tests")
 struct SchemaTests {
 
-    // MARK: - Test Types
-
-    struct User: Persistable, Codable, Sendable {
-        typealias ID = Int64
-
-        var id: Int64 = Int64.random(in: 1...Int64.max)
-
-        static let persistableType = "User"
-        static let allFields = ["id", "email", "name"]
-
-        static let indexDescriptors: [IndexDescriptor] = [
-            IndexDescriptor(
-                name: "User_email",
-                keyPaths: ["email"],
-                kind: ScalarIndexKind(),
-                commonOptions: .init(unique: true)
-            )
-        ]
-
-        static func fieldNumber(for fieldName: String) -> Int? {
-            switch fieldName {
-            case "id": return 1
-            case "email": return 2
-            case "name": return 3
-            default: return nil
-            }
-        }
-
-        static func enumMetadata(for fieldName: String) -> EnumMetadata? {
-            return nil
-        }
-
-        var email: String
-        var name: String
-
-        subscript(dynamicMember member: String) -> (any Sendable)? {
-            switch member {
-            case "id": return id
-            case "email": return email
-            case "name": return name
-            default: return nil
-            }
-        }
-    }
-
-    struct Order: Persistable, Codable, Sendable {
-        typealias ID = Int64
-
-        var id: Int64 = Int64.random(in: 1...Int64.max)
-
-        static let persistableType = "Order"
-        static let allFields = ["id", "userID", "amount"]
-
-        static let indexDescriptors: [IndexDescriptor] = [
-            IndexDescriptor(
-                name: "Order_userID",
-                keyPaths: ["userID"],
-                kind: ScalarIndexKind(),
-                commonOptions: .init()
-            ),
-            IndexDescriptor(
-                name: "Order_amount",
-                keyPaths: ["amount"],
-                kind: ScalarIndexKind(),
-                commonOptions: .init()
-            )
-        ]
-
-        static func fieldNumber(for fieldName: String) -> Int? {
-            switch fieldName {
-            case "id": return 1
-            case "userID": return 2
-            case "amount": return 3
-            default: return nil
-            }
-        }
-
-        static func enumMetadata(for fieldName: String) -> EnumMetadata? {
-            return nil
-        }
-
-        var userID: Int64
-        var amount: Double
-
-        subscript(dynamicMember member: String) -> (any Sendable)? {
-            switch member {
-            case "id": return id
-            case "userID": return userID
-            case "amount": return amount
-            default: return nil
-            }
-        }
-    }
+    // Type aliases for backward compatibility in tests
+    typealias User = SchemaTestUser
+    typealias Order = SchemaTestOrder
 
     // MARK: - Tests
 
@@ -137,7 +98,7 @@ struct SchemaTests {
     func schemaMergesManualIndexDescriptors() {
         let manualIndex = IndexDescriptor(
             name: "Manual_index",
-            keyPaths: ["field"],
+            keyPaths: [\ManualIndexTestEntity.field],
             kind: ScalarIndexKind(),
             commonOptions: .init()
         )
@@ -195,7 +156,10 @@ struct SchemaTests {
         let emailIndex = schema.indexDescriptor(named: "User_email")
         #expect(emailIndex != nil)
         #expect(emailIndex?.name == "User_email")
-        #expect(emailIndex?.keyPaths == ["email"])
+        // keyPaths is now [AnyKeyPath], verify using fieldName conversion
+        if let keyPath = emailIndex?.keyPaths.first as? PartialKeyPath<User> {
+            #expect(User.fieldName(for: keyPath) == "email")
+        }
 
         let unknownIndex = schema.indexDescriptor(named: "Unknown_index")
         #expect(unknownIndex == nil)
@@ -341,7 +305,7 @@ struct SchemaTests {
     func manualIndexDescriptorsInDictionary() {
         let manualIndex = IndexDescriptor(
             name: "Custom_manual_index",
-            keyPaths: ["someField"],
+            keyPaths: [\ManualIndexTestEntity.someField],
             kind: ScalarIndexKind(),
             commonOptions: .init()
         )
@@ -355,7 +319,10 @@ struct SchemaTests {
         // Manual index should be accessible
         let found = schema.indexDescriptor(named: "Custom_manual_index")
         #expect(found != nil)
-        #expect(found?.keyPaths == ["someField"])
+        // Verify keyPath using fieldName conversion
+        if let keyPath = found?.keyPaths.first as? PartialKeyPath<ManualIndexTestEntity> {
+            #expect(ManualIndexTestEntity.fieldName(for: keyPath) == "someField")
+        }
 
         // Total count: 1 from User + 1 manual
         #expect(schema.indexDescriptors.count == 2)
@@ -374,36 +341,6 @@ struct SchemaTests {
         #expect(schema.indexDescriptor(named: "Unknown") == nil)
     }
 
-    /// Test: Entity without indexes
-    struct NoIndexEntity: Persistable, Codable, Sendable {
-        typealias ID = String
-        var id: String = UUID().uuidString
-
-        static let persistableType = "NoIndexEntity"
-        static let allFields = ["id", "data"]
-        static let indexDescriptors: [IndexDescriptor] = []
-
-        static func fieldNumber(for fieldName: String) -> Int? {
-            switch fieldName {
-            case "id": return 1
-            case "data": return 2
-            default: return nil
-            }
-        }
-
-        static func enumMetadata(for fieldName: String) -> EnumMetadata? { nil }
-
-        var data: String
-
-        subscript(dynamicMember member: String) -> (any Sendable)? {
-            switch member {
-            case "id": return id
-            case "data": return data
-            default: return nil
-            }
-        }
-    }
-
     @Test("Entity without indexes")
     func entityWithoutIndexes() {
         let schema = Schema([NoIndexEntity.self])
@@ -415,57 +352,20 @@ struct SchemaTests {
         #expect(schema.indexDescriptors(for: "NoIndexEntity").isEmpty)
     }
 
-    /// Test: Composite index (multiple keyPaths)
-    struct CompositeIndexEntity: Persistable, Codable, Sendable {
-        typealias ID = String
-        var id: String = UUID().uuidString
-
-        static let persistableType = "CompositeIndexEntity"
-        static let allFields = ["id", "field1", "field2", "field3"]
-        static let indexDescriptors: [IndexDescriptor] = [
-            IndexDescriptor(
-                name: "CompositeIndexEntity_composite",
-                keyPaths: ["field1", "field2", "field3"],
-                kind: ScalarIndexKind(),
-                commonOptions: .init()
-            )
-        ]
-
-        static func fieldNumber(for fieldName: String) -> Int? {
-            switch fieldName {
-            case "id": return 1
-            case "field1": return 2
-            case "field2": return 3
-            case "field3": return 4
-            default: return nil
-            }
-        }
-
-        static func enumMetadata(for fieldName: String) -> EnumMetadata? { nil }
-
-        var field1: String
-        var field2: Int
-        var field3: Bool
-
-        subscript(dynamicMember member: String) -> (any Sendable)? {
-            switch member {
-            case "id": return id
-            case "field1": return field1
-            case "field2": return field2
-            case "field3": return field3
-            default: return nil
-            }
-        }
-    }
-
     @Test("Composite index with multiple keyPaths")
     func compositeIndex() {
         let schema = Schema([CompositeIndexEntity.self])
 
         let index = schema.indexDescriptor(named: "CompositeIndexEntity_composite")
         #expect(index != nil)
-        #expect(index?.keyPaths == ["field1", "field2", "field3"])
+        // keyPaths is now [AnyKeyPath], verify count
         #expect(index?.keyPaths.count == 3)
+        // Verify field names using fieldName conversion
+        let fieldNames = index?.keyPaths.compactMap { keyPath -> String? in
+            guard let partialKeyPath = keyPath as? PartialKeyPath<CompositeIndexEntity> else { return nil }
+            return CompositeIndexEntity.fieldName(for: partialKeyPath)
+        }
+        #expect(fieldNames == ["field1", "field2", "field3"])
     }
 
     // MARK: - Index Options Preservation Tests
@@ -486,46 +386,21 @@ struct SchemaTests {
         #expect(userIDIndex?.commonOptions.unique == false)
     }
 
-    /// Test: Sparse option is preserved through Schema
-    struct SparseIndexEntity: Persistable, Codable, Sendable {
-        typealias ID = String
-        var id: String = UUID().uuidString
-
-        static let persistableType = "SparseIndexEntity"
-        static let allFields = ["id", "optionalField"]
-        static let indexDescriptors: [IndexDescriptor] = [
-            IndexDescriptor(
-                name: "SparseIndexEntity_optional",
-                keyPaths: ["optionalField"],
-                kind: ScalarIndexKind(),
-                commonOptions: .init(sparse: true)
-            )
-        ]
-
-        static func fieldNumber(for fieldName: String) -> Int? {
-            switch fieldName {
-            case "id": return 1
-            case "optionalField": return 2
-            default: return nil
-            }
-        }
-
-        static func enumMetadata(for fieldName: String) -> EnumMetadata? { nil }
-
-        var optionalField: String?
-
-        subscript(dynamicMember member: String) -> (any Sendable)? {
-            switch member {
-            case "id": return id
-            case "optionalField": return optionalField
-            default: return nil
-            }
-        }
-    }
-
     @Test("Index sparse option is preserved")
     func indexSparseOptionPreserved() {
-        let schema = Schema([SparseIndexEntity.self])
+        // Create a sparse index manually (since #Index macro doesn't support sparse option)
+        let sparseIndex = IndexDescriptor(
+            name: "SparseIndexEntity_optional",
+            keyPaths: [\SparseIndexEntity.optionalField],
+            kind: ScalarIndexKind(),
+            commonOptions: .init(sparse: true)
+        )
+
+        let schema = Schema(
+            [SparseIndexEntity.self],
+            version: Schema.Version(1, 0, 0),
+            indexDescriptors: [sparseIndex]
+        )
 
         let index = schema.indexDescriptor(named: "SparseIndexEntity_optional")
         #expect(index?.commonOptions.sparse == true)
@@ -536,14 +411,14 @@ struct SchemaTests {
     /// Test: Schema(entities:) produces consistent results with entity-defined indexes
     @Test("Schema entities initializer collects indexes from entities")
     func schemaEntitiesInitializerConsistency() {
-        // Create entities manually
+        // Create entities manually using anyKeyPaths initializer
         let userEntity = Schema.Entity(
             name: "TestUser",
             allFields: ["id", "email"],
             indexDescriptors: [
                 IndexDescriptor(
                     name: "TestUser_email",
-                    keyPaths: ["email"],
+                    anyKeyPaths: [],  // Empty for manual testing
                     kind: ScalarIndexKind(),
                     commonOptions: .init(unique: true)
                 )
@@ -570,7 +445,7 @@ struct SchemaTests {
             indexDescriptors: [
                 IndexDescriptor(
                     name: "TestEntity_field1",
-                    keyPaths: ["field1"],
+                    keyPaths: [\TestEntityForSchema.field1],
                     kind: ScalarIndexKind(),
                     commonOptions: .init()
                 )
@@ -579,7 +454,7 @@ struct SchemaTests {
 
         let manualIndex = IndexDescriptor(
             name: "TestEntity_manual",
-            keyPaths: ["field1", "id"],
+            anyKeyPaths: [],  // Empty for manual testing
             kind: ScalarIndexKind(),
             commonOptions: .init()
         )

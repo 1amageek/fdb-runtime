@@ -18,86 +18,24 @@ struct MigrationTests {
 
     // MARK: - Helper Types
 
-    struct TestUser: Persistable, Codable, Sendable {
-        static let persistableType = "TestUser"
-        static let primaryKeyFields = ["id"]
-        static let allFields = ["id", "email", "name"]
+    @Persistable
+    struct TestUser {
+        var id: Int64 = Int64(Date().timeIntervalSince1970 * 1000)
 
-        static let indexDescriptors: [IndexDescriptor] = [
-            IndexDescriptor(
-                name: "TestUser_email",
-                keyPaths: ["email"],
-                kind: ScalarIndexKind(),
-                commonOptions: .init()
-            )
-        ]
+        #Index<TestUser>([\.email], type: ScalarIndexKind())
 
-        static func fieldNumber(for fieldName: String) -> Int? {
-            switch fieldName {
-            case "id": return 1
-            case "email": return 2
-            case "name": return 3
-            default: return nil
-            }
-        }
-
-        static func enumMetadata(for fieldName: String) -> EnumMetadata? {
-            return nil
-        }
-
-        var id: Int64
         var email: String
         var name: String
-
-        subscript(dynamicMember member: String) -> (any Sendable)? {
-            switch member {
-            case "id": return id
-            case "email": return email
-            case "name": return name
-            default: return nil
-            }
-        }
     }
 
-    struct TestProduct: Persistable, Codable, Sendable {
-        static let persistableType = "TestProduct"
-        static let primaryKeyFields = ["id"]
-        static let allFields = ["id", "name", "price"]
+    @Persistable
+    struct TestProduct {
+        var id: Int64 = Int64(Date().timeIntervalSince1970 * 1000)
 
-        static let indexDescriptors: [IndexDescriptor] = [
-            IndexDescriptor(
-                name: "TestProduct_price",
-                keyPaths: ["price"],
-                kind: ScalarIndexKind(),
-                commonOptions: .init()
-            )
-        ]
+        #Index<TestProduct>([\.price], type: ScalarIndexKind())
 
-        static func fieldNumber(for fieldName: String) -> Int? {
-            switch fieldName {
-            case "id": return 1
-            case "name": return 2
-            case "price": return 3
-            default: return nil
-            }
-        }
-
-        static func enumMetadata(for fieldName: String) -> EnumMetadata? {
-            return nil
-        }
-
-        var id: Int64
         var name: String
         var price: Double
-
-        subscript(dynamicMember member: String) -> (any Sendable)? {
-            switch member {
-            case "id": return id
-            case "name": return name
-            case "price": return price
-            default: return nil
-            }
-        }
     }
 
     // MARK: - Helper Methods
@@ -222,7 +160,7 @@ struct MigrationTests {
         // Create new index for TestUser
         let newIndex = IndexDescriptor(
             name: "TestUser_name",
-            keyPaths: ["name"],
+            keyPaths: [\TestUser.name],
             kind: ScalarIndexKind(),
             commonOptions: .init()
         )
@@ -286,7 +224,7 @@ struct MigrationTests {
         // Create new index
         let newIndex = IndexDescriptor(
             name: "TestUser_name_v2",
-            keyPaths: ["name"],
+            keyPaths: [\TestUser.name],
             kind: ScalarIndexKind(),
             commonOptions: .init()
         )
@@ -363,7 +301,7 @@ struct MigrationTests {
         // Create index for TestProduct (not TestUser)
         let productIndex = IndexDescriptor(
             name: "TestProduct_name",
-            keyPaths: ["name"],
+            keyPaths: [\TestProduct.name],
             kind: ScalarIndexKind(),
             commonOptions: .init()
         )
@@ -424,7 +362,6 @@ struct MigrationTests {
     /// Helper type for batch operation tests (using String ID for ULID compatibility)
     struct BatchTestUser: Persistable, Codable, Sendable {
         static let persistableType = "BatchTestUser"
-        static let primaryKeyFields = ["id"]
         static let allFields = ["id", "name", "status"]
         static let indexDescriptors: [IndexDescriptor] = []
 
@@ -439,6 +376,31 @@ struct MigrationTests {
 
         static func enumMetadata(for fieldName: String) -> EnumMetadata? {
             return nil
+        }
+
+        static func fieldName<Value>(for keyPath: KeyPath<BatchTestUser, Value>) -> String {
+            switch keyPath {
+            case \BatchTestUser.id: return "id"
+            case \BatchTestUser.name: return "name"
+            case \BatchTestUser.status: return "status"
+            default: return "\(keyPath)"
+            }
+        }
+
+        static func fieldName(for keyPath: PartialKeyPath<BatchTestUser>) -> String {
+            switch keyPath {
+            case \BatchTestUser.id: return "id"
+            case \BatchTestUser.name: return "name"
+            case \BatchTestUser.status: return "status"
+            default: return "\(keyPath)"
+            }
+        }
+
+        static func fieldName(for keyPath: AnyKeyPath) -> String {
+            if let partialKeyPath = keyPath as? PartialKeyPath<BatchTestUser> {
+                return fieldName(for: partialKeyPath)
+            }
+            return "\(keyPath)"
         }
 
         var id: String

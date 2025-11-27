@@ -99,3 +99,79 @@ public enum RangeComponent: String, Sendable, Codable {
     case lowerBound
     case upperBound
 }
+
+// MARK: - KeyExpression Factory
+
+extension KeyExpression where Self == FieldKeyExpression {
+    /// Create a KeyExpression from a dot-notation string
+    ///
+    /// Handles both simple fields and nested paths:
+    /// - "email" → FieldKeyExpression(fieldName: "email")
+    /// - "address.city" → NestExpression(parentField: "address", child: FieldKeyExpression(fieldName: "city"))
+    /// - "user.address.city" → NestExpression(parentField: "user", child: NestExpression(...))
+    ///
+    /// - Parameter dotNotation: Field path with dot notation (e.g., "address.city")
+    /// - Returns: A KeyExpression representing the field path
+    public static func from(dotNotation: String) -> KeyExpression {
+        return KeyExpressionFactory.from(dotNotation: dotNotation)
+    }
+}
+
+/// Factory for creating KeyExpressions from various inputs
+public enum KeyExpressionFactory {
+    /// Create a KeyExpression from a dot-notation string
+    ///
+    /// **Examples**:
+    /// - "email" → FieldKeyExpression(fieldName: "email")
+    /// - "address.city" → NestExpression(parentField: "address", child: FieldKeyExpression(fieldName: "city"))
+    /// - "user.address.city" → NestExpression(parentField: "user", child: NestExpression(parentField: "address", child: FieldKeyExpression(fieldName: "city")))
+    ///
+    /// - Parameter dotNotation: Field path with dot notation (e.g., "address.city")
+    /// - Returns: A KeyExpression representing the field path
+    public static func from(dotNotation: String) -> KeyExpression {
+        let components = dotNotation.split(separator: ".").map(String.init)
+        return from(components: components)
+    }
+
+    /// Create a KeyExpression from an array of path components
+    ///
+    /// - Parameter components: Array of field names (e.g., ["address", "city"])
+    /// - Returns: A KeyExpression representing the field path
+    public static func from(components: [String]) -> KeyExpression {
+        guard !components.isEmpty else {
+            return EmptyKeyExpression()
+        }
+
+        if components.count == 1 {
+            return FieldKeyExpression(fieldName: components[0])
+        }
+
+        // Build nested expression from right to left
+        // ["user", "address", "city"] → Nest("user", Nest("address", Field("city")))
+        var expression: KeyExpression = FieldKeyExpression(fieldName: components.last!)
+        for i in stride(from: components.count - 2, through: 0, by: -1) {
+            expression = NestExpression(parentField: components[i], child: expression)
+        }
+        return expression
+    }
+
+    /// Create a KeyExpression from an array of dot-notation keyPaths
+    ///
+    /// When multiple keyPaths are provided, they are concatenated.
+    ///
+    /// - Parameter keyPaths: Array of dot-notation strings (e.g., ["category", "price"])
+    /// - Returns: A KeyExpression representing all fields
+    public static func from(keyPaths: [String]) -> KeyExpression {
+        guard !keyPaths.isEmpty else {
+            return EmptyKeyExpression()
+        }
+
+        if keyPaths.count == 1 {
+            return from(dotNotation: keyPaths[0])
+        }
+
+        // Multiple keyPaths: create ConcatenateKeyExpression
+        let expressions = keyPaths.map { from(dotNotation: $0) }
+        return ConcatenateKeyExpression(children: expressions)
+    }
+}

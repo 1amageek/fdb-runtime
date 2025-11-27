@@ -21,10 +21,10 @@ import FDBIndexing
 ///     toVersion: Schema.Version(2, 0, 0),
 ///     description: "Add email index"
 /// ) { context in
-///     // Add new index
+///     // Add new index using KeyPath
 ///     let emailIndex = IndexDescriptor(
 ///         name: "email_index",
-///         keyPaths: ["email"],
+///         keyPaths: [\User.email],
 ///         kind: ScalarIndexKind(),
 ///         commonOptions: .init()
 ///     )
@@ -180,6 +180,7 @@ public struct MigrationContext: Sendable {
         // 3. Convert IndexDescriptor to Index with itemTypes
         let index = try convertDescriptorToIndex(
             indexDescriptor,
+            entity: targetEntity,
             itemTypes: Set([targetEntity.name])
         )
 
@@ -362,6 +363,7 @@ public struct MigrationContext: Sendable {
         // 6. Re-register index with itemTypes
         let index = try convertDescriptorToIndex(
             indexDescriptor,
+            entity: targetEntity,
             itemTypes: Set([targetEntity.name])
         )
         do {
@@ -678,27 +680,30 @@ public struct MigrationContext: Sendable {
     ///
     /// This converts metadata-only IndexDescriptor to runtime Index objects.
     ///
+    /// **Nested Field Support**:
+    /// Nested keyPaths (e.g., "address.city") are converted to `NestExpression`.
+    /// Uses `KeyExpressionFactory.from(keyPaths:)` to properly handle both
+    /// simple fields and nested paths.
+    ///
     /// - Parameters:
     ///   - descriptor: IndexDescriptor from schema
+    ///   - entity: The entity containing the Persistable type for KeyPath → String conversion
     ///   - itemTypes: Set of item type names that this index applies to
     /// - Returns: Index object
     /// - Throws: Error if conversion fails
     private func convertDescriptorToIndex(
         _ descriptor: IndexDescriptor,
+        entity: Schema.Entity,
         itemTypes: Set<String>
     ) throws -> Index {
-        // Build KeyExpression from field names
-        let keyExpression: KeyExpression
-
-        if descriptor.keyPaths.count == 1 {
-            // Single field index
-            keyExpression = FieldKeyExpression(fieldName: descriptor.keyPaths[0])
-        } else {
-            // Composite index
-            keyExpression = ConcatenateKeyExpression(
-                children: descriptor.keyPaths.map { FieldKeyExpression(fieldName: $0) }
-            )
+        // Convert AnyKeyPaths to field name strings using the entity's Persistable type
+        let fieldNames = descriptor.keyPaths.map { keyPath in
+            entity.persistableType.fieldName(for: keyPath)
         }
+
+        // Build KeyExpression from field names using factory
+        // This properly handles nested paths (e.g., "address.city" → NestExpression)
+        let keyExpression = KeyExpressionFactory.from(keyPaths: fieldNames)
 
         // Create Index with proper itemTypes scope
         return Index(

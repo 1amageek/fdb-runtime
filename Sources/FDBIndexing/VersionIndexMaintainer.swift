@@ -91,6 +91,16 @@ public struct VersionIndexMaintainer<Item: Persistable>: IndexMaintainer {
         transaction.setValue([], for: key)
     }
 
+    /// Compute expected index keys for an item (for scrubber verification)
+    ///
+    /// Returns the version index key that should exist for this item.
+    public func computeIndexKeys(
+        for item: Item,
+        id: Tuple
+    ) async throws -> [FDB.Bytes] {
+        return [try buildIndexKey(for: item, id: id)]
+    }
+
     // MARK: - Private
 
     /// Build index key for an item

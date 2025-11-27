@@ -421,14 +421,16 @@ public enum SchemaError: Error, CustomStringConvertible {
     ///
     /// Index names must be unique across all entities in a schema.
     /// This error provides details about both the existing and duplicate index.
-    case duplicateIndexName(indexName: String, existingKeyPaths: [String], duplicateKeyPaths: [String])
+    case duplicateIndexName(indexName: String, existingKeyPaths: [AnyKeyPath], duplicateKeyPaths: [AnyKeyPath])
 
     public var description: String {
         switch self {
         case .duplicateIndexName(let indexName, let existingKeyPaths, let duplicateKeyPaths):
+            let existingDesc = existingKeyPaths.map { String(describing: $0) }.joined(separator: ", ")
+            let duplicateDesc = duplicateKeyPaths.map { String(describing: $0) }.joined(separator: ", ")
             return "Duplicate index name '\(indexName)' detected. " +
-                   "Existing index keyPaths: \(existingKeyPaths), " +
-                   "duplicate index keyPaths: \(duplicateKeyPaths). " +
+                   "Existing index keyPaths: [\(existingDesc)], " +
+                   "duplicate index keyPaths: [\(duplicateDesc)]. " +
                    "Index names must be unique across all entities in the schema."
         }
     }

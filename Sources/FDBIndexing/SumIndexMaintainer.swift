@@ -126,6 +126,22 @@ public struct SumIndexMaintainer<Item: Persistable>: IndexMaintainer {
         applyDelta(value, toKey: key, transaction: transaction)
     }
 
+    /// Compute expected index keys for an item (for scrubber verification)
+    ///
+    /// For sum indexes, returns the group key that this item contributes to.
+    ///
+    /// **Note**: Aggregation indexes (Count/Sum/Min/Max) store aggregated values,
+    /// not per-item entries. Scrubber can verify the key exists but cannot
+    /// verify the exact sum value without full re-scan. Use `allowRepair=false`
+    /// for detection only, or use `rebuildIndex()` for full rebuild.
+    public func computeIndexKeys(
+        for item: Item,
+        id: Tuple
+    ) async throws -> [FDB.Bytes] {
+        let (key, _) = try extractGroupKeyAndValue(for: item)
+        return [key]
+    }
+
     // MARK: - Private
 
     /// Extract grouping key and value from an item

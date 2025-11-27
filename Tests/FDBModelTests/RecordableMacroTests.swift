@@ -29,7 +29,11 @@ struct ModelMacroTests {
 
         let emailIndex = IndexedUser.indexDescriptors[0]
         #expect(emailIndex.name == "IndexedUser_email")
-        #expect(emailIndex.keyPaths == ["email"])
+        #expect(emailIndex.keyPaths.count == 1)
+        // Verify keyPath can be converted back to field name
+        if let kp = emailIndex.keyPaths.first as? PartialKeyPath<IndexedUser> {
+            #expect(IndexedUser.fieldName(for: kp) == "email")
+        }
         #expect(emailIndex.kindIdentifier == "scalar")
         #expect(emailIndex.isUnique == true)
     }
@@ -43,14 +47,23 @@ struct ModelMacroTests {
         // First index: category
         let categoryIndex = Product.indexDescriptors[0]
         #expect(categoryIndex.name == "Product_category")
-        #expect(categoryIndex.keyPaths == ["category"])
+        #expect(categoryIndex.keyPaths.count == 1)
+        if let kp = categoryIndex.keyPaths.first as? PartialKeyPath<Product> {
+            #expect(Product.fieldName(for: kp) == "category")
+        }
         #expect(categoryIndex.kindIdentifier == "scalar")
         #expect(categoryIndex.isUnique == false)
 
         // Second index: category + price
         let compositeIndex = Product.indexDescriptors[1]
         #expect(compositeIndex.name == "Product_category_price")
-        #expect(compositeIndex.keyPaths == ["category", "price"])
+        #expect(compositeIndex.keyPaths.count == 2)
+        // Verify composite keyPaths
+        let fieldNames = compositeIndex.keyPaths.compactMap { kp -> String? in
+            guard let partialKP = kp as? PartialKeyPath<Product> else { return nil }
+            return Product.fieldName(for: partialKP)
+        }
+        #expect(fieldNames == ["category", "price"])
         #expect(compositeIndex.kindIdentifier == "scalar")
     }
 

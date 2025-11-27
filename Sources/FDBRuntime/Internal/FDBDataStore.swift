@@ -13,6 +13,9 @@ import Logging
 /// Key structure:
 /// - Records: `[subspace]/R/[persistableType]/[id]` = serialized data
 /// - Indexes: `[subspace]/I/[indexName]/[values]/[id]` = ''
+///
+/// **Metrics**: Operations are tracked via DataStoreDelegate (default: MetricsDataStoreDelegate).
+/// Metrics include operation counts, durations, and item counts per type.
 internal final class FDBDataStore: Sendable {
     // MARK: - Properties
 
@@ -20,6 +23,9 @@ internal final class FDBDataStore: Sendable {
     let subspace: Subspace
     let schema: Schema
     private let logger: Logger
+
+    /// Delegate for operation callbacks (metrics, etc.)
+    private let delegate: DataStoreDelegate
 
     /// Records subspace: [subspace]/R/
     let recordSubspace: Subspace
@@ -33,12 +39,14 @@ internal final class FDBDataStore: Sendable {
         database: any DatabaseProtocol,
         subspace: Subspace,
         schema: Schema,
-        logger: Logger? = nil
+        logger: Logger? = nil,
+        delegate: DataStoreDelegate? = nil
     ) {
         self.database = database
         self.subspace = subspace
         self.schema = schema
         self.logger = logger ?? Logger(label: "com.fdb.runtime.datastore")
+        self.delegate = delegate ?? MetricsDataStoreDelegate.shared
         self.recordSubspace = subspace.subspace("R")
         self.indexSubspace = subspace.subspace("I")
     }
@@ -49,24 +57,34 @@ internal final class FDBDataStore: Sendable {
     func fetchAll<T: Persistable>(_ type: T.Type) async throws -> [T] {
         let typeSubspace = recordSubspace.subspace(T.persistableType)
         let (begin, end) = typeSubspace.range()
+        let startTime = DispatchTime.now()
 
         var results: [T] = []
 
-        try await database.withTransaction { transaction in
-            let sequence = transaction.getRange(
-                begin: begin,
-                end: end,
-                snapshot: true
-            )
+        do {
+            try await database.withTransaction { transaction in
+                let sequence = transaction.getRange(
+                    begin: begin,
+                    end: end,
+                    snapshot: true
+                )
 
-            for try await (_, value) in sequence {
-                // Use Protobuf deserialization via DataAccess
-                let model: T = try DataAccess.deserialize(value)
-                results.append(model)
+                for try await (_, value) in sequence {
+                    // Use Protobuf deserialization via DataAccess
+                    let model: T = try DataAccess.deserialize(value)
+                    results.append(model)
+                }
             }
-        }
 
-        return results
+            let duration = DispatchTime.now().uptimeNanoseconds - startTime.uptimeNanoseconds
+            delegate.didFetch(itemType: T.persistableType, count: results.count, duration: duration)
+
+            return results
+        } catch {
+            let duration = DispatchTime.now().uptimeNanoseconds - startTime.uptimeNanoseconds
+            delegate.didFailFetch(itemType: T.persistableType, error: error, duration: duration)
+            throw error
+        }
     }
 
     /// Fetch a single model by ID
@@ -166,7 +184,7 @@ internal final class FDBDataStore: Sendable {
     ) async throws -> IndexFetchResult<T>? {
         // Extract indexable condition from predicate
         guard let condition = extractIndexableCondition(from: predicate),
-              let matchingIndex = findMatchingIndex(for: condition, in: T.indexDescriptors) else {
+              let matchingIndex = findMatchingIndex(for: condition, in: T.indexDescriptors, type: T.self) else {
             return nil
         }
 
@@ -326,7 +344,9 @@ internal final class FDBDataStore: Sendable {
             // Check if first keyPaths have matching equals conditions
             var matchCount = 0
             for keyPath in descriptor.keyPaths {
-                if let condition = conditionsByField[keyPath], condition.comparison == .equals {
+                // Convert AnyKeyPath to String using Persistable's fieldName method
+                let fieldName = T.fieldName(for: keyPath as! PartialKeyPath<T>)
+                if let condition = conditionsByField[fieldName], condition.comparison == .equals {
                     matchCount += 1
                 } else {
                     break  // Must match from the beginning
@@ -335,22 +355,25 @@ internal final class FDBDataStore: Sendable {
 
             if matchCount >= 2 {
                 // Use first condition for this compound index
-                if let condition = conditionsByField[descriptor.keyPaths[0]] {
-                    return condition
+                if let firstKeyPath = descriptor.keyPaths.first {
+                    let firstFieldName = T.fieldName(for: firstKeyPath as! PartialKeyPath<T>)
+                    if let condition = conditionsByField[firstFieldName] {
+                        return condition
+                    }
                 }
             }
         }
 
         // Priority 2: Single field with equals
         for condition in allConditions where condition.comparison == .equals {
-            if findMatchingIndex(for: condition, in: descriptors) != nil {
+            if findMatchingIndex(for: condition, in: descriptors, type: T.self) != nil {
                 return condition
             }
         }
 
         // Priority 3: Any indexable condition
         for condition in allConditions {
-            if findMatchingIndex(for: condition, in: descriptors) != nil {
+            if findMatchingIndex(for: condition, in: descriptors, type: T.self) != nil {
                 return condition
             }
         }
@@ -359,11 +382,19 @@ internal final class FDBDataStore: Sendable {
     }
 
     /// Find an index that matches the condition's field
-    private func findMatchingIndex(for condition: IndexableCondition, in descriptors: [IndexDescriptor]) -> IndexDescriptor? {
+    private func findMatchingIndex<T: Persistable>(
+        for condition: IndexableCondition,
+        in descriptors: [IndexDescriptor],
+        type: T.Type
+    ) -> IndexDescriptor? {
         // Find an index where the first keyPath matches the condition's field
         for descriptor in descriptors {
-            if let firstKeyPath = descriptor.keyPaths.first, firstKeyPath == condition.fieldName {
-                return descriptor
+            if let firstKeyPath = descriptor.keyPaths.first {
+                // Convert AnyKeyPath to String using Persistable's fieldName method
+                let fieldName = T.fieldName(for: firstKeyPath as! PartialKeyPath<T>)
+                if fieldName == condition.fieldName {
+                    return descriptor
+                }
             }
         }
         return nil
@@ -472,7 +503,7 @@ internal final class FDBDataStore: Sendable {
         // Try to use index for counting
         if let predicate = descriptor.predicate,
            let condition = extractIndexableCondition(from: predicate),
-           let matchingIndex = findMatchingIndex(for: condition, in: T.indexDescriptors) {
+           let matchingIndex = findMatchingIndex(for: condition, in: T.indexDescriptors, type: T.self) {
             return try await countUsingIndex(condition: condition, index: matchingIndex)
         }
 
@@ -559,15 +590,26 @@ internal final class FDBDataStore: Sendable {
     func save<T: Persistable>(_ models: [T]) async throws {
         guard !models.isEmpty else { return }
 
-        try await database.withTransaction { transaction in
-            for model in models {
-                try await self.saveModel(model, transaction: transaction)
-            }
-        }
+        let startTime = DispatchTime.now()
 
-        logger.trace("Saved \(models.count) models", metadata: [
-            "type": "\(T.persistableType)"
-        ])
+        do {
+            try await database.withTransaction { transaction in
+                for model in models {
+                    try await self.saveModel(model, transaction: transaction)
+                }
+            }
+
+            let duration = DispatchTime.now().uptimeNanoseconds - startTime.uptimeNanoseconds
+            delegate.didSave(itemType: T.persistableType, count: models.count, duration: duration)
+
+            logger.trace("Saved \(models.count) models", metadata: [
+                "type": "\(T.persistableType)"
+            ])
+        } catch {
+            let duration = DispatchTime.now().uptimeNanoseconds - startTime.uptimeNanoseconds
+            delegate.didFailSave(itemType: T.persistableType, error: error, duration: duration)
+            throw error
+        }
     }
 
     /// Save a single model within a transaction
@@ -608,15 +650,26 @@ internal final class FDBDataStore: Sendable {
     func delete<T: Persistable>(_ models: [T]) async throws {
         guard !models.isEmpty else { return }
 
-        try await database.withTransaction { transaction in
-            for model in models {
-                try await self.deleteModel(model, transaction: transaction)
-            }
-        }
+        let startTime = DispatchTime.now()
 
-        logger.trace("Deleted \(models.count) models", metadata: [
-            "type": "\(T.persistableType)"
-        ])
+        do {
+            try await database.withTransaction { transaction in
+                for model in models {
+                    try await self.deleteModel(model, transaction: transaction)
+                }
+            }
+
+            let duration = DispatchTime.now().uptimeNanoseconds - startTime.uptimeNanoseconds
+            delegate.didDelete(itemType: T.persistableType, count: models.count, duration: duration)
+
+            logger.trace("Deleted \(models.count) models", metadata: [
+                "type": "\(T.persistableType)"
+            ])
+        } catch {
+            let duration = DispatchTime.now().uptimeNanoseconds - startTime.uptimeNanoseconds
+            delegate.didFailDelete(itemType: T.persistableType, error: error, duration: duration)
+            throw error
+        }
     }
 
     /// Delete a single model within a transaction
@@ -665,22 +718,33 @@ internal final class FDBDataStore: Sendable {
         inserts: [any Persistable],
         deletes: [any Persistable]
     ) async throws {
-        try await database.withTransaction { transaction in
-            // Process inserts
-            for model in inserts {
-                try await self.saveModelUntyped(model, transaction: transaction)
+        let startTime = DispatchTime.now()
+
+        do {
+            try await database.withTransaction { transaction in
+                // Process inserts
+                for model in inserts {
+                    try await self.saveModelUntyped(model, transaction: transaction)
+                }
+
+                // Process deletes
+                for model in deletes {
+                    try await self.deleteModelUntyped(model, transaction: transaction)
+                }
             }
 
-            // Process deletes
-            for model in deletes {
-                try await self.deleteModelUntyped(model, transaction: transaction)
-            }
+            let duration = DispatchTime.now().uptimeNanoseconds - startTime.uptimeNanoseconds
+            delegate.didExecuteBatch(insertCount: inserts.count, deleteCount: deletes.count, duration: duration)
+
+            logger.trace("Executed batch", metadata: [
+                "inserts": "\(inserts.count)",
+                "deletes": "\(deletes.count)"
+            ])
+        } catch {
+            let duration = DispatchTime.now().uptimeNanoseconds - startTime.uptimeNanoseconds
+            delegate.didFailBatch(error: error, duration: duration)
+            throw error
         }
-
-        logger.trace("Executed batch", metadata: [
-            "inserts": "\(inserts.count)",
-            "deletes": "\(deletes.count)"
-        ])
     }
 
     /// Save model without type parameter (for batch operations)
@@ -875,21 +939,12 @@ internal final class FDBDataStore: Sendable {
         for try await (key, _) in sequence {
             // Check if this key belongs to a different record
             if let existingId = extractIDFromIndexKey(key, subspace: valueSubspace) {
-                // Compare with excluding ID
-                var isMatch = true
-                for i in 0..<min(existingId.count, excludingId.count) {
-                    if let existingElement = existingId[i],
-                       let excludingElement = excludingId[i] {
-                        let existingStr = String(describing: existingElement)
-                        let excludingStr = String(describing: excludingElement)
-                        if existingStr != excludingStr {
-                            isMatch = false
-                            break
-                        }
-                    }
-                }
+                // Compare tuples using byte representation for type-safe comparison
+                // This avoids issues with String(describing:) treating different types as equal
+                let existingBytes = existingId.pack()
+                let excludingBytes = excludingId.pack()
 
-                if !isMatch {
+                if existingBytes != excludingBytes {
                     // Different ID, unique constraint violation
                     throw FDBIndexError.uniqueConstraintViolation(
                         indexName: descriptor.name,
@@ -1118,10 +1173,13 @@ internal final class FDBDataStore: Sendable {
     }
 
     /// Extract index values from a type-erased model
-    private func extractIndexValuesUntyped(from model: any Persistable, keyPaths: [String]) -> [any TupleElement] {
+    private func extractIndexValuesUntyped(from model: any Persistable, keyPaths: [AnyKeyPath]) -> [any TupleElement] {
+        let modelType = type(of: model)
         var values: [any TupleElement] = []
         for keyPath in keyPaths {
-            if let extractedValues = try? DataAccess.extractField(from: model, keyPath: keyPath) {
+            // Convert AnyKeyPath to field name string using the model's static method
+            let fieldName = modelType.fieldName(for: keyPath)
+            if let extractedValues = try? DataAccess.extractField(from: model, keyPath: fieldName) {
                 values.append(contentsOf: extractedValues)
             }
         }
@@ -1129,10 +1187,12 @@ internal final class FDBDataStore: Sendable {
     }
 
     /// Extract index values from a model
-    private func extractIndexValues<T: Persistable>(from model: T, keyPaths: [String]) -> [any TupleElement] {
+    private func extractIndexValues<T: Persistable>(from model: T, keyPaths: [AnyKeyPath]) -> [any TupleElement] {
         var values: [any TupleElement] = []
         for keyPath in keyPaths {
-            if let extractedValues = try? DataAccess.extractField(from: model, keyPath: keyPath) {
+            // Convert AnyKeyPath to field name string using Persistable's fieldName method
+            let fieldName = T.fieldName(for: keyPath as! PartialKeyPath<T>)
+            if let extractedValues = try? DataAccess.extractField(from: model, keyPath: fieldName) {
                 values.append(contentsOf: extractedValues)
             }
         }

@@ -111,6 +111,28 @@ public protocol IndexMaintainer<Item>: Sendable {
     /// }
     /// ```
     var customBuildStrategy: (any IndexBuildStrategy<Item>)? { get }
+
+    /// Compute expected index keys for an item
+    ///
+    /// This method computes the index keys that should exist for a given item
+    /// WITHOUT actually writing them. Used by OnlineIndexScrubber for verification.
+    ///
+    /// - Parameters:
+    ///   - item: The item to compute keys for
+    ///   - id: The item's unique identifier
+    /// - Returns: Array of index keys that should exist for this item
+    /// - Throws: Error if computation fails
+    ///
+    /// **Default**: Empty array (verification skipped for this maintainer)
+    ///
+    /// **Implementation Notes**:
+    /// - For VALUE indexes: Return key like [indexSubspace]/[indexName]/[value]/[id]
+    /// - For aggregation indexes: Return key(s) for aggregation buckets
+    /// - For complex indexes: Return all keys that should reference this item
+    func computeIndexKeys(
+        for item: Item,
+        id: Tuple
+    ) async throws -> [FDB.Bytes]
 }
 
 // MARK: - Default Implementations
@@ -119,5 +141,15 @@ extension IndexMaintainer {
     /// Default: no custom build strategy (use standard scan-based build)
     public var customBuildStrategy: (any IndexBuildStrategy<Item>)? {
         return nil
+    }
+
+    /// Default: empty array (verification skipped for this maintainer)
+    ///
+    /// Concrete implementations should override this to enable scrubber verification.
+    public func computeIndexKeys(
+        for item: Item,
+        id: Tuple
+    ) async throws -> [FDB.Bytes] {
+        return []
     }
 }

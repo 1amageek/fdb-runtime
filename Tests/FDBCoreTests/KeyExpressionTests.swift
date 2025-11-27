@@ -75,4 +75,104 @@ struct KeyExpressionTests {
 
         #expect(concat.columnCount == 3)
     }
+
+    // MARK: - KeyExpressionFactory Tests
+
+    @Test("KeyExpressionFactory from simple dot notation")
+    func testFactoryFromSimpleDotNotation() {
+        let expr = KeyExpressionFactory.from(dotNotation: "email")
+
+        // Should be a simple FieldKeyExpression
+        let fieldExpr = expr as? FieldKeyExpression
+        #expect(fieldExpr != nil)
+        #expect(fieldExpr?.fieldName == "email")
+    }
+
+    @Test("KeyExpressionFactory from nested dot notation")
+    func testFactoryFromNestedDotNotation() {
+        let expr = KeyExpressionFactory.from(dotNotation: "address.city")
+
+        // Should be NestExpression(parentField: "address", child: FieldKeyExpression(fieldName: "city"))
+        let nestExpr = expr as? NestExpression
+        #expect(nestExpr != nil)
+        #expect(nestExpr?.parentField == "address")
+
+        let childExpr = nestExpr?.child as? FieldKeyExpression
+        #expect(childExpr != nil)
+        #expect(childExpr?.fieldName == "city")
+    }
+
+    @Test("KeyExpressionFactory from deeply nested dot notation")
+    func testFactoryFromDeeplyNestedDotNotation() {
+        let expr = KeyExpressionFactory.from(dotNotation: "user.address.city")
+
+        // Should be NestExpression(parentField: "user", child: NestExpression(parentField: "address", child: FieldKeyExpression(fieldName: "city")))
+        let outerNest = expr as? NestExpression
+        #expect(outerNest != nil)
+        #expect(outerNest?.parentField == "user")
+
+        let innerNest = outerNest?.child as? NestExpression
+        #expect(innerNest != nil)
+        #expect(innerNest?.parentField == "address")
+
+        let fieldExpr = innerNest?.child as? FieldKeyExpression
+        #expect(fieldExpr != nil)
+        #expect(fieldExpr?.fieldName == "city")
+    }
+
+    @Test("KeyExpressionFactory from components")
+    func testFactoryFromComponents() {
+        let expr = KeyExpressionFactory.from(components: ["address", "city"])
+
+        let nestExpr = expr as? NestExpression
+        #expect(nestExpr != nil)
+        #expect(nestExpr?.parentField == "address")
+
+        let childExpr = nestExpr?.child as? FieldKeyExpression
+        #expect(childExpr != nil)
+        #expect(childExpr?.fieldName == "city")
+    }
+
+    @Test("KeyExpressionFactory from empty components")
+    func testFactoryFromEmptyComponents() {
+        let expr = KeyExpressionFactory.from(components: [])
+
+        let emptyExpr = expr as? EmptyKeyExpression
+        #expect(emptyExpr != nil)
+    }
+
+    @Test("KeyExpressionFactory from keyPaths array - single")
+    func testFactoryFromKeyPathsSingle() {
+        let expr = KeyExpressionFactory.from(keyPaths: ["email"])
+
+        let fieldExpr = expr as? FieldKeyExpression
+        #expect(fieldExpr != nil)
+        #expect(fieldExpr?.fieldName == "email")
+    }
+
+    @Test("KeyExpressionFactory from keyPaths array - multiple")
+    func testFactoryFromKeyPathsMultiple() {
+        let expr = KeyExpressionFactory.from(keyPaths: ["category", "price"])
+
+        let concatExpr = expr as? ConcatenateKeyExpression
+        #expect(concatExpr != nil)
+        #expect(concatExpr?.columnCount == 2)
+    }
+
+    @Test("KeyExpressionFactory from keyPaths array - with nested")
+    func testFactoryFromKeyPathsWithNested() {
+        let expr = KeyExpressionFactory.from(keyPaths: ["category", "address.city"])
+
+        let concatExpr = expr as? ConcatenateKeyExpression
+        #expect(concatExpr != nil)
+        #expect(concatExpr?.columnCount == 2)
+
+        // First child should be simple field
+        let firstChild = concatExpr?.children[0] as? FieldKeyExpression
+        #expect(firstChild?.fieldName == "category")
+
+        // Second child should be nested
+        let secondChild = concatExpr?.children[1] as? NestExpression
+        #expect(secondChild?.parentField == "address")
+    }
 }
