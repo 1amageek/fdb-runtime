@@ -29,9 +29,13 @@ import FDBCore
 /// 3. At runtime, system casts `IndexKind` to `IndexKindMaintainable`
 /// 4. `makeIndexMaintainer()` creates the appropriate `IndexMaintainer`
 ///
-/// **Standard IndexKinds**: FDBIndexing provides `IndexKindMaintainable` conformance for:
+/// **Standard IndexKinds**: Implementors provide `IndexKindMaintainable` conformance for:
 /// - `ScalarIndexKind` → `ScalarIndexMaintainer`
-/// - (Future: Count, Sum, Min, Max, Version)
+/// - `CountIndexKind` → `CountIndexMaintainer`
+/// - `SumIndexKind` → `SumIndexMaintainer`
+/// - `MinIndexKind` / `MaxIndexKind` → `MinMaxIndexMaintainer`
+/// - `AverageIndexKind` → `AverageIndexMaintainer`
+/// - `VersionIndexKind` → `VersionIndexMaintainer`
 ///
 /// **Third-Party Extension**:
 /// ```swift

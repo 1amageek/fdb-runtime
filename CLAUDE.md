@@ -16,17 +16,18 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
    - `Schema` (entities, versions, index descriptors)
    - `ProtobufEncoder` / `ProtobufDecoder` for efficient serialization
 3. **FDBIndexing** - Index abstraction layer (FDB-dependent, Server only)
-   - `IndexMaintainer` protocol and implementations:
-     - `ScalarIndexMaintainer` - VALUE indexes for sorting and range queries
-     - `CountIndexMaintainer` - COUNT aggregation with atomic operations
-     - `SumIndexMaintainer` - SUM aggregation with atomic operations
-     - `MinIndexMaintainer` / `MaxIndexMaintainer` - Min/Max tracking
-     - `VersionIndexMaintainer` - Version-based indexes
+   - `IndexMaintainer<Item>` protocol - defines interface for index maintenance
    - `IndexKindMaintainable` protocol - bridges IndexKind to IndexMaintainer
    - `_EntityIndexBuildable` protocol - enables existential type dispatch for OnlineIndexer
    - `DataAccess` static methods for field extraction
    - `KeyExpression` and `KeyExpressionVisitor` for index key building
    - `Index`, `IndexManager`, `IndexStateManager`, `OnlineIndexer`
+   - **Note**: Concrete IndexMaintainer implementations are provided by **fdb-indexes** package:
+     - `ScalarIndexMaintainer` - VALUE indexes for sorting and range queries
+     - `CountIndexMaintainer` - COUNT aggregation with atomic operations
+     - `SumIndexMaintainer` - SUM aggregation with atomic operations
+     - `MinIndexMaintainer` / `MaxIndexMaintainer` - Min/Max tracking
+     - `VersionIndexMaintainer` - Version-based indexes
 4. **FDBRuntime** - Store and Container (FDB-dependent, Server only)
    - `FDBStore` (type-independent CRUD operations)
    - `FDBContainer` (schema management, store lifecycle, directory layer)
@@ -660,8 +661,8 @@ FDBIndexing (FDB-dependent, server only)
   - DataAccess, KeyExpression, KeyExpressionVisitor
   - IndexMaintainer protocol, IndexKindMaintainable protocol
   - _EntityIndexBuildable protocol (existential type dispatch)
-  - Maintainer implementations: Scalar, Count, Sum, Min, Max, Version
   - Index, IndexManager, OnlineIndexer, EntityIndexBuilder
+  - Note: IndexMaintainer implementations in fdb-indexes package
     ↓
 FDBRuntime (FDB-dependent, server only)
   - FDBStore, FDBContainer, FDBContext
@@ -1015,18 +1016,18 @@ try await IndexBuilderRegistry.shared.buildIndex(
    - `IndexKindMaintainable` protocol - bridges IndexKind to IndexMaintainer at runtime
    - `_EntityIndexBuildable` protocol - enables existential type dispatch for OnlineIndexer
    - `DataAccess` static struct - provides field extraction utilities for all Persistable types
-   - Built-in IndexMaintainer implementations:
+   - **IndexMaintainer implementations provided by fdb-indexes package**:
      - `ScalarIndexMaintainer` - VALUE indexes for sorting and range queries
      - `CountIndexMaintainer` - COUNT aggregation with atomic add operations
      - `SumIndexMaintainer` - SUM aggregation with atomic add operations
      - `MinIndexMaintainer` / `MaxIndexMaintainer` - Min/Max tracking via sorted keys
      - `VersionIndexMaintainer` - Version-based indexes
-   - Upper layers can provide additional IndexMaintainer implementations (e.g., VectorIndexMaintainer)
+   - Third parties can provide additional IndexMaintainer implementations (e.g., VectorIndexMaintainer)
 
 3. **Separation of Concerns**
    - **FDBModel**: Persistable protocol, @Persistable macro, IndexKind/IndexDescriptor metadata, StandardIndexKinds, TypeValidation, ULID - FDB-independent, works on all platforms
    - **FDBCore**: Schema and Serialization (ProtobufEncoder/Decoder) - FDB-independent, works on all platforms
-   - **FDBIndexing**: DataAccess, KeyExpression, IndexMaintainer protocol, IndexKindMaintainable, _EntityIndexBuildable, all Maintainer implementations (Scalar, Count, Sum, Min, Max, Version), Index, IndexManager, OnlineIndexer, EntityIndexBuilder - FDB-dependent, server only
+   - **FDBIndexing**: DataAccess, KeyExpression, IndexMaintainer protocol, IndexKindMaintainable, _EntityIndexBuildable, Index, IndexManager, OnlineIndexer, EntityIndexBuilder - FDB-dependent, server only (Note: IndexMaintainer implementations are in fdb-indexes package)
    - **FDBRuntime**: Store management (FDBStore, FDBContainer, FDBContext), Migration - FDB-dependent, server only
 
 4. **Macro-Generated Code**
@@ -1068,7 +1069,7 @@ try await IndexBuilderRegistry.shared.buildIndex(
   - `updateIndex(oldItem:newItem:transaction:)` - called on insert/update/delete
   - `scanItem(_:id:transaction:)` - called during batch indexing
   - `customBuildStrategy` - optional custom bulk build logic (e.g., for HNSW)
-- **ScalarIndexMaintainer** implementation provided in FDBIndexing for VALUE indexes
+- **Note**: Concrete implementations (ScalarIndexMaintainer, CountIndexMaintainer, etc.) are provided by **fdb-indexes** package
 
 #### DataAccess (Sources/FDBIndexing/DataAccess.swift)
 - **Static utility struct** (not a protocol) for extracting field values from Persistable items
@@ -1370,7 +1371,7 @@ public final class ClassName: Sendable {
 ## Related Projects
 
 This package is part of a larger ecosystem:
-- **fdb-indexing** - Index metadata abstraction (dependency of FDBCore)
+- **fdb-indexes** - IndexMaintainer implementations (ScalarIndexMaintainer, CountIndexMaintainer, etc.)
 - **fdb-swift-bindings** - FoundationDB Swift bindings (dependency of FDBRuntime)
 - **fdb-record-layer** - Structured record layer (builds on top of this package)
 
@@ -1882,13 +1883,6 @@ This architecture enables **composable data models** where a single FDBStore han
 - KeyExpressionVisitor: `Sources/FDBIndexing/KeyExpressionVisitor.swift`
 - IndexMaintainer protocol: `Sources/FDBIndexing/IndexMaintainer.swift`
 - IndexKindMaintainable protocol: `Sources/FDBIndexing/IndexKindMaintainable.swift`
-- Maintainer implementations:
-  - ScalarIndexMaintainer: `Sources/FDBIndexing/ScalarIndexMaintainer.swift`
-  - CountIndexMaintainer: `Sources/FDBIndexing/CountIndexMaintainer.swift`
-  - SumIndexMaintainer: `Sources/FDBIndexing/SumIndexMaintainer.swift`
-  - MinIndexMaintainer: `Sources/FDBIndexing/MinIndexMaintainer.swift`
-  - MaxIndexMaintainer: `Sources/FDBIndexing/MaxIndexMaintainer.swift`
-  - VersionIndexMaintainer: `Sources/FDBIndexing/VersionIndexMaintainer.swift`
 - EntityIndexBuilder: `Sources/FDBIndexing/EntityIndexBuilder.swift`
 - Index: `Sources/FDBIndexing/Index.swift`
 - IndexManager: `Sources/FDBIndexing/IndexManager.swift`
@@ -1896,6 +1890,7 @@ This architecture enables **composable data models** where a single FDBStore han
 - OnlineIndexScrubber: `Sources/FDBIndexing/OnlineIndexScrubber.swift`
 - ScrubberTypes: `Sources/FDBIndexing/ScrubberTypes.swift`
 - RangeSet: `Sources/FDBIndexing/RangeSet.swift`
+- **Note**: IndexMaintainer implementations (ScalarIndexMaintainer, CountIndexMaintainer, etc.) are in **fdb-indexes** package
 
 ### FDBRuntime (FDB-dependent, server only)
 - FDBDataStore: `Sources/FDBRuntime/FDBDataStore.swift`

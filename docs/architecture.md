@@ -53,11 +53,12 @@ FDBRuntime は、FoundationDB 上で複数のデータモデル層をサポー�
 │  プラットフォーム: macOS, Linux (Server専用)               │
 │                                                          │
 │  ✅ IndexMaintainer<Item> プロトコル                     │
-│  ✅ ScalarIndexMaintainer 実装                          │
+│  ✅ IndexKindMaintainable プロトコル                     │
 │  ✅ DataAccess 静的ユーティリティ (プロトコルではない)     │
 │  ✅ KeyExpression, KeyExpressionVisitor                 │
 │  ✅ Index, IndexManager, IndexStateManager              │
 │  ✅ OnlineIndexer                                       │
+│  Note: IndexMaintainer実装はfdb-indexesパッケージで提供  │
 └────────────┬────────────────────────────────────────────┘
              │
              ▼
@@ -180,14 +181,15 @@ public struct RecordStore<Record: Persistable> {
 ### 決定2: FDBIndexing のプロトコルと静的ユーティリティ
 
 **理由**:
-- IndexMaintainer はプロトコルとして FDBIndexing に配置（各レイヤーが実装）
+- IndexMaintainer はプロトコルとして FDBIndexing に配置
+- IndexKindMaintainable は IndexKind と IndexMaintainer を橋渡しするプロトコル
 - DataAccess は静的ユーティリティとして FDBIndexing に配置（全 Persistable 型で共通）
-- ScalarIndexMaintainer は組み込み実装として提供
+- IndexMaintainer の具体的実装は **fdb-indexes** パッケージで提供
 
 **利点**:
 - IndexMaintainer: 各データモデル層が独自のインデックス維持ロジックを実装可能
 - DataAccess: Persistable の `@dynamicMemberLookup` を活用した統一的なフィールドアクセス
-- ScalarIndexMaintainer: VALUE インデックスの標準実装を提供
+- fdb-indexes パッケージでの実装分離: 標準 IndexKind (Scalar, Count, Sum, Min, Max, Version) の実装を提供
 
 **定義**:
 ```swift
@@ -572,8 +574,9 @@ FDBRuntime は、複数のデータモデル層を統一基盤でサポートす
 **実装のポイント**:
 1. **DataAccess 静的メソッド**: 全 Persistable 型で共通のフィールドアクセス・シリアライゼーション
 2. **IndexMaintainer プロトコル**: インデックス更新ロジック（`updateIndex`, `scanItem`）
-3. **ScalarIndexMaintainer**: VALUE インデックスの組み込み実装
+3. **IndexKindMaintainable プロトコル**: IndexKind と IndexMaintainer を橋渡し
+4. **fdb-indexes パッケージ**: 標準 IndexMaintainer 実装（Scalar, Count, Sum, Min, Max, Version）
 
 ---
 
-**Last Updated**: 2025-11-27
+**Last Updated**: 2025-11-28

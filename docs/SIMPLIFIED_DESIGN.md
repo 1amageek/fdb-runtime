@@ -4,7 +4,7 @@
 
 This document describes the simplified, finalized architecture for fdb-runtime and fdb-indexes packages based on the design discussion.
 
-**Last Updated**: 2025-11-26
+**Last Updated**: 2025-11-28
 
 ## Key Design Decisions
 
@@ -121,17 +121,21 @@ struct Order {
 fdb-runtime/
 ├── FDBModel (Persistable protocol, IndexKind protocol, StandardIndexKinds, ULID)
 ├── FDBCore (Schema, ProtobufEncoder/Decoder)
-├── FDBIndexing (IndexMaintainer protocol, ScalarIndexMaintainer, DataAccess utilities)
+├── FDBIndexing (IndexMaintainer protocol, IndexKindMaintainable protocol, DataAccess utilities)
 └── FDBRuntime (FDBStore, FDBContainer, FDBContext)
 
-fdb-indexes/ (separate package - planned)
-├── VectorIndexLayer (VectorIndexKind + HNSW/IVF maintainers)
-├── FullTextIndexLayer (FullTextIndexKind + inverted index)
-└── SpatialIndexLayer (S2, Geohash, etc.)
+fdb-indexes/ (separate package)
+├── ScalarIndexLayer (ScalarIndexMaintainer for VALUE indexes)
+├── AggregationIndexLayer (CountIndexMaintainer, SumIndexMaintainer)
+├── MinMaxIndexLayer (MinIndexMaintainer, MaxIndexMaintainer)
+├── VersionIndexLayer (VersionIndexMaintainer)
+├── VectorIndexLayer (VectorIndexKind + HNSW/IVF maintainers) - planned
+├── FullTextIndexLayer (FullTextIndexKind + inverted index) - planned
+└── SpatialIndexLayer (S2, Geohash, etc.) - planned
 ```
 
-**Note**: StandardIndexKinds (Scalar, Count, Sum, Min, Max, Version) are built into FDBModel.
-ScalarIndexMaintainer is built into FDBIndexing.
+**Note**: StandardIndexKinds (Scalar, Count, Sum, Min, Max, Version) are defined in FDBModel.
+IndexMaintainer implementations are in **fdb-indexes** package.
 
 **Usage** (import only what you need):
 ```swift
@@ -203,17 +207,24 @@ extension Product: Persistable {
 ### 2. Store Initialization (Runtime)
 
 ```swift
-// IndexMaintainer creation is handled by upper layers, not IndexKind
-// ScalarIndexMaintainer is built into FDBIndexing
+// IndexMaintainer creation is handled by fdb-indexes package
+// IndexKindMaintainable protocol bridges IndexKind to IndexMaintainer
 
 let index = Index(descriptor: descriptor, itemType: "Product")
-let maintainer = ScalarIndexMaintainer<Product>(
+
+// ScalarIndexKind conforms to IndexKindMaintainable (in fdb-indexes)
+let maintainer = (descriptor.kind as? IndexKindMaintainable)?.makeIndexMaintainer(
     index: index,
-    subspace: indexSubspace
+    subspace: indexSubspace,
+    idExpression: idExpression
 )
 
-// For advanced index types (VectorIndexKind, etc.),
-// upper layers (fdb-indexes) provide the maintainer implementation
+// fdb-indexes provides implementations for standard IndexKinds:
+// - ScalarIndexKind → ScalarIndexMaintainer
+// - CountIndexKind → CountIndexMaintainer
+// - SumIndexKind → SumIndexMaintainer
+// - MinIndexKind / MaxIndexKind → MinMaxIndexMaintainer
+// - VersionIndexKind → VersionIndexMaintainer
 ```
 
 ### 3. Data Save (Runtime)
@@ -233,9 +244,11 @@ try await store.save(product)
 ```swift
 // fdb-geospatial-index package
 
+import FDBModel
 import FDBIndexing
 import FoundationDB
 
+// 1. Define IndexKind in your FDB-independent module
 public struct GeohashIndexKind: IndexKind {
     public static let identifier = "com.example.geohash"
     public static let subspaceStructure = SubspaceStructure.hierarchical
@@ -246,14 +259,23 @@ public struct GeohashIndexKind: IndexKind {
         self.precision = precision
     }
 
-    public func makeIndexMaintainer<Item>(
+    public static func validateTypes(_ types: [Any.Type]) throws {
+        // Validation logic
+    }
+}
+
+// 2. Implement IndexKindMaintainable in your FDB-dependent module
+extension GeohashIndexKind: IndexKindMaintainable {
+    public func makeIndexMaintainer<Item: Persistable>(
         index: Index,
-        subspace: Subspace
-    ) throws -> any IndexMaintainer<Item> {
+        subspace: Subspace,
+        idExpression: KeyExpression
+    ) -> any IndexMaintainer<Item> {
         return GeohashIndexMaintainer<Item>(
             index: index,
             precision: precision,
-            subspace: subspace
+            subspace: subspace,
+            idExpression: idExpression
         )
     }
 }
@@ -393,26 +415,38 @@ let schema = Schema(
 ### IndexKind Protocol Definition
 
 ```swift
+// In FDBModel - FDB-independent, all platforms
 public protocol IndexKind: Sendable, Codable, Hashable {
     static var identifier: String { get }
     static var subspaceStructure: SubspaceStructure { get }
     static func validateTypes(_ types: [Any.Type]) throws
-
-    // NOTE: makeIndexMaintainer is NOT a protocol requirement
-    // It is implemented by concrete IndexKind types in upper layers (fdb-indexes)
 }
 ```
 
-**Design Decision**: `makeIndexMaintainer` is NOT part of the protocol requirement.
+### IndexKindMaintainable Protocol Definition
+
+```swift
+// In FDBIndexing - FDB-dependent, bridges IndexKind to IndexMaintainer
+public protocol IndexKindMaintainable: IndexKind {
+    func makeIndexMaintainer<Item: Persistable>(
+        index: Index,
+        subspace: Subspace,
+        idExpression: KeyExpression
+    ) -> any IndexMaintainer<Item>
+}
+```
+
+**Design Decision**: `makeIndexMaintainer` is in separate `IndexKindMaintainable` protocol.
 
 **Rationale**:
-- FDBIndexing contains **metadata-only** IndexKind definitions (used by @Persistable macro, schema, tests)
-- Actual IndexMaintainer implementations are in **separate packages** (fdb-indexes, third-party packages)
-- Requiring makeIndexMaintainer would create **circular dependency** (fdb-runtime → fdb-indexes → fdb-runtime)
+- `IndexKind` is in FDBModel (FDB-independent, all platforms)
+- `IndexKindMaintainable` is in FDBIndexing (FDB-dependent, server only)
+- This separation allows IndexKind to be used on iOS clients without FDB dependency
+- Implementors (fdb-indexes, third-party packages) provide IndexKindMaintainable conformance
 
-**Implementation Pattern** (in fdb-indexes or third-party packages):
+**Implementation Pattern** (in fdb-indexes):
 ```swift
-// ScalarIndexKind definition (in fdb-runtime/FDBIndexing)
+// ScalarIndexKind definition (in fdb-runtime/FDBModel)
 public struct ScalarIndexKind: IndexKind {
     public static let identifier = "scalar"
     public static let subspaceStructure = SubspaceStructure.flat
@@ -420,14 +454,14 @@ public struct ScalarIndexKind: IndexKind {
     public init() {}
 }
 
-// ScalarIndexKind.makeIndexMaintainer (in fdb-indexes/ScalarIndexLayer)
-extension ScalarIndexKind {
-    public func makeIndexMaintainer<Item: Sendable>(
+// IndexKindMaintainable conformance (in fdb-indexes/ScalarIndexLayer)
+extension ScalarIndexKind: IndexKindMaintainable {
+    public func makeIndexMaintainer<Item: Persistable>(
         index: Index,
         subspace: Subspace,
-        configuration: AlgorithmConfiguration?
-    ) throws -> any IndexMaintainer<Item> {
-        return ScalarIndexMaintainer<Item>(index: index, kind: self, subspace: subspace)
+        idExpression: KeyExpression
+    ) -> any IndexMaintainer<Item> {
+        return ScalarIndexMaintainer<Item>(index: index, subspace: subspace, idExpression: idExpression)
     }
 }
 ```
@@ -571,10 +605,10 @@ public struct VectorIndexKind: IndexKind {
 | **ID Generation** | ULID auto-generated if not defined |
 | **Composite Keys** | Not supported (use directory partitioning) |
 | **#PrimaryKey macro** | Removed (not needed) |
-| **makeIndexMaintainer** | NOT in IndexKind protocol (handled by upper layers) |
-| **Built-in Indexes** | ScalarIndexMaintainer in FDBIndexing |
-| **Advanced Indexes** | Planned for fdb-indexes package |
-| **Third-Party Extension** | Implement IndexKind + IndexMaintainer |
+| **IndexKindMaintainable** | Bridge protocol in FDBIndexing (connects IndexKind to IndexMaintainer) |
+| **Standard Indexes** | Implementations in **fdb-indexes** package (Scalar, Count, Sum, Min, Max, Version) |
+| **Advanced Indexes** | Planned for fdb-indexes package (Vector, FullText, Spatial) |
+| **Third-Party Extension** | Implement IndexKind + IndexKindMaintainable + IndexMaintainer |
 | **DataAccess** | Static utility (not a protocol) |
 
 ## Migration from Old Design

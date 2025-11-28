@@ -80,10 +80,11 @@ FDBRuntime consists of **four modules** with clear responsibilities:
 │  Platform: macOS, Linux (server-only)                   │
 │                                                          │
 │  ✅ IndexMaintainer protocol                             │
-│  ✅ ScalarIndexMaintainer implementation                │
+│  ✅ IndexKindMaintainable protocol (bridge)             │
 │  ✅ DataAccess static utility (not a protocol)          │
 │  ✅ KeyExpression, KeyExpressionVisitor                 │
 │  ✅ Index, IndexManager, OnlineIndexer                  │
+│  Note: IndexMaintainer implementations in fdb-indexes   │
 └────────────┬────────────────────────────────────────────┘
              │
              ▼
@@ -115,10 +116,12 @@ FDBRuntime consists of **four modules** with clear responsibilities:
 
 | Module | Responsibility | Platform Support | Dependencies |
 |--------|---------------|------------------|--------------|
-| **FDBModel** | Model definitions, IndexKind protocol, ULID | All platforms | None |
+| **FDBModel** | Model definitions, IndexKind protocol, StandardIndexKinds, ULID | All platforms | None |
 | **FDBCore** | Schema, Serialization | All platforms | FDBModel |
-| **FDBIndexing** | IndexMaintainer protocol, DataAccess utilities | Server-only | FDBModel + FDBCore + FDB |
+| **FDBIndexing** | IndexMaintainer protocol, IndexKindMaintainable protocol, DataAccess utilities | Server-only | FDBModel + FDBCore + FDB |
 | **FDBRuntime** | FDBStore, FDBContainer, FDBContext | Server-only | FDBIndexing + FDB |
+
+**Note**: IndexMaintainer implementations (ScalarIndexMaintainer, CountIndexMaintainer, etc.) are provided by **fdb-indexes** package.
 
 ---
 
@@ -210,12 +213,17 @@ public protocol IndexMaintainer<Item>: Sendable {
     var customBuildStrategy: (any IndexBuildStrategy<Item>)? { get }
 }
 
-// Built-in implementation:
-ScalarIndexMaintainer<Item: Persistable>  // VALUE indexes
+// IndexKindMaintainable bridges IndexKind to IndexMaintainer (in FDBIndexing)
+public protocol IndexKindMaintainable: IndexKind {
+    func makeIndexMaintainer<Item: Persistable>(...) -> any IndexMaintainer<Item>
+}
 
-// Custom implementations (in upper layers):
-struct FullTextIndexMaintainer<Item>: IndexMaintainer { ... }
-struct VectorIndexMaintainer<Item>: IndexMaintainer { ... }
+// Standard implementations (in fdb-indexes package):
+ScalarIndexMaintainer<Item: Persistable>   // VALUE indexes
+CountIndexMaintainer<Item: Persistable>    // COUNT aggregation
+SumIndexMaintainer<Item: Persistable>      // SUM aggregation
+MinMaxIndexMaintainer<Item: Persistable>   // MIN/MAX tracking
+VersionIndexMaintainer<Item: Persistable>  // Version-based indexes
 ```
 
 ### 4. **Platform Separation**
@@ -383,7 +391,8 @@ See `IndexManager` documentation in `Sources/FDBRuntime/IndexManager.swift` for 
 
 ## 📊 Built-in Index Types
 
-FDBIndexing module provides **protocol-based extensible index system** with 7 built-in IndexKind implementations:
+FDBModel module provides **protocol-based extensible index system** with built-in IndexKind definitions.
+IndexMaintainer implementations are provided by **fdb-indexes** package:
 
 | IndexKind | Identifier | Use Case | Complexity |
 |-----------|-----------|----------|------------|
@@ -493,8 +502,8 @@ FDBRuntime is the **foundation** for a family of data model layers:
 
 | Layer | Status | Description |
 |-------|--------|-------------|
+| **fdb-indexes** | ✅ Production | IndexMaintainer implementations (Scalar, Count, Sum, Min, Max, Version) |
 | **fdb-record-layer** | ✅ Production | Structured records (SwiftData-like API) |
-| **fdb-indexing** | ✅ Integrated | Now part of fdb-runtime |
 | **fdb-swift-bindings** | ✅ Stable | FoundationDB Swift bindings |
 
 ### Planned Layers
@@ -538,16 +547,15 @@ let embeddingStore = try await VectorStore(
 
 ## 🔧 Key Design Decisions
 
-### 1. **FDBIndexing Integration (Nov 2025)**
+### 1. **IndexMaintainer Implementation Separation (Nov 2025)**
 
-**Previously**: fdb-indexing was a separate package
-**Now**: Integrated into fdb-runtime as a module
+**Design**: IndexMaintainer protocol is in fdb-runtime/FDBIndexing, implementations are in fdb-indexes package
 
 **Rationale**:
-- fdb-indexing had no external dependencies
-- Only used by fdb-runtime and its layers
-- Simplifies package management for users
-- Maintains zero-dependency index metadata abstractions
+- Clean separation between protocol definition and implementation
+- fdb-runtime provides abstractions (IndexMaintainer, IndexKindMaintainable protocols)
+- fdb-indexes provides concrete implementations (ScalarIndexMaintainer, CountIndexMaintainer, etc.)
+- Third parties can provide custom implementations without modifying fdb-runtime
 
 ### 2. **FDBStore as Common Foundation**
 
@@ -561,13 +569,14 @@ let embeddingStore = try await VectorStore(
 
 ### 3. **Protocol-Based Architecture**
 
-**Decision**: FDBRuntime provides protocols (DataAccess, IndexMaintainer), not concrete implementations
+**Decision**: FDBIndexing provides protocols (IndexMaintainer, IndexKindMaintainable), fdb-indexes provides implementations
 
 **Benefits**:
 - Each data model layer can optimize for its use case
 - No unnecessary coupling between layers
 - Easy to add new data models
 - Compile-time type safety
+- Standard implementations available via fdb-indexes package
 
 ### 4. **Terminology Precision**
 
@@ -611,15 +620,16 @@ MIT License - See [LICENSE](LICENSE) for details
 
 ## 🔗 Related Projects
 
+- [fdb-indexes](https://github.com/1amageek/fdb-indexes) - IndexMaintainer implementations (Scalar, Count, Sum, Min, Max, Version)
 - [fdb-swift-bindings](https://github.com/1amageek/fdb-swift-bindings) - FoundationDB Swift bindings
 - [fdb-record-layer](https://github.com/1amageek/fdb-record-layer) - Structured record layer
 - [FoundationDB](https://www.foundationdb.org/) - Official FoundationDB project
 
 ---
 
-**Status**: ✅ **Production Ready** - 4-module architecture (FDBModel → FDBCore → FDBIndexing → FDBRuntime), IndexMaintainer protocol established, DataAccess utilities implemented
+**Status**: ✅ **Production Ready** - 4-module architecture (FDBModel → FDBCore → FDBIndexing → FDBRuntime), IndexMaintainer protocol established, DataAccess utilities implemented. IndexMaintainer implementations in fdb-indexes package.
 
-**Last Updated**: 2025-11-26
+**Last Updated**: 2025-11-28
 
 ---
 
