@@ -10,7 +10,7 @@ import FoundationDB
 /// **Coverage**:
 /// - Autosave functionality
 /// - Change tracking (insert, delete, save, rollback)
-/// - Fetch operations with FDBFetchDescriptor
+/// - Fetch operations with Query DSL
 /// - Model retrieval by ID
 @Suite("FDBContext Tests")
 struct FDBContextTests {
@@ -221,8 +221,8 @@ struct FDBContextTests {
         }
         try await context.save()
 
-        // Fetch all users
-        let fetchedUsers = try await context.fetch(FDBFetchDescriptor<TestUser>())
+        // Fetch all users using Fluent API
+        let fetchedUsers = try await context.fetch(TestUser.self).execute()
         #expect(fetchedUsers.count == 3)
 
         // Verify names (sorted may vary)
@@ -272,9 +272,9 @@ struct FDBContextTests {
         context.insert(product)
         try await context.save()
 
-        // Fetch each type
-        let fetchedUsers = try await context.fetch(FDBFetchDescriptor<TestUser>())
-        let fetchedProducts = try await context.fetch(FDBFetchDescriptor<TestProduct>())
+        // Fetch each type using Fluent API
+        let fetchedUsers = try await context.fetch(TestUser.self).execute()
+        let fetchedProducts = try await context.fetch(TestProduct.self).execute()
 
         #expect(fetchedUsers.count == 1)
         #expect(fetchedProducts.count == 1)
@@ -298,9 +298,10 @@ struct FDBContextTests {
         }
         try await context.save()
 
-        // Fetch with limit
-        let descriptor = FDBFetchDescriptor<TestUser>(fetchLimit: 2)
-        let fetchedUsers = try await context.fetch(descriptor)
+        // Fetch with limit using Fluent API
+        let fetchedUsers = try await context.fetch(TestUser.self)
+            .limit(2)
+            .execute()
         #expect(fetchedUsers.count == 2)
     }
 
@@ -317,8 +318,8 @@ struct FDBContextTests {
         }
         try await context.save()
 
-        // Fetch count
-        let count = try await context.fetchCount(FDBFetchDescriptor<TestUser>())
+        // Fetch count using Fluent API
+        let count = try await context.fetch(TestUser.self).count()
         #expect(count == 3)
     }
 

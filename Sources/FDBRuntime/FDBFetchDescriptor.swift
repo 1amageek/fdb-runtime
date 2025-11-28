@@ -1,182 +1,421 @@
 import Foundation
 import FDBModel
 
-/// Describes the criteria, sort order, and configuration for fetching models
-///
-/// Similar to SwiftData's `FetchDescriptor<T>`, this type provides a declarative
-/// way to specify what data to fetch and how to process it.
+// MARK: - Query
+
+/// Type-safe query builder for fetching Persistable models
 ///
 /// **Usage**:
 /// ```swift
-/// // Fetch all users
-/// let descriptor = FDBFetchDescriptor<User>()
+/// // Fluent API
+/// let users = try await context.fetch(User.self)
+///     .where(\.isActive == true)
+///     .where(\.age > 18)
+///     .orderBy(\.name)
+///     .limit(10)
+///     .execute()
 ///
-/// // Fetch with predicate and sorting
-/// let descriptor = FDBFetchDescriptor<User>(
-///     predicate: .field("isActive", .equals, true),
-///     sortBy: [.ascending("name")],
-///     fetchLimit: 10
-/// )
+/// // Simple fetch all
+/// let allUsers = try await context.fetch(User.self).execute()
 ///
-/// let users = try await context.fetch(descriptor)
+/// // First result
+/// let user = try await context.fetch(User.self)
+///     .where(\.email == "alice@example.com")
+///     .first()
+///
+/// // Count
+/// let count = try await context.fetch(User.self)
+///     .where(\.isActive == true)
+///     .count()
 /// ```
-public struct FDBFetchDescriptor<T: Persistable>: Sendable {
-    /// Filter predicate (nil means fetch all)
-    public var predicate: FDBPredicate<T>?
+public struct Query<T: Persistable>: Sendable {
+    /// Filter predicates (combined with AND)
+    public var predicates: [Predicate<T>]
 
-    /// Sort descriptors (empty means no sorting)
-    public var sortBy: [FDBSortDescriptor<T>]
+    /// Sort descriptors
+    public var sortDescriptors: [SortDescriptor<T>]
 
-    /// Maximum number of results (nil means no limit)
+    /// Maximum number of results
     public var fetchLimit: Int?
 
-    /// Number of results to skip (nil means start from beginning)
+    /// Number of results to skip
     public var fetchOffset: Int?
 
-    /// Initialize a fetch descriptor
-    ///
-    /// - Parameters:
-    ///   - predicate: Filter predicate
-    ///   - sortBy: Sort descriptors
-    ///   - fetchLimit: Maximum number of results
-    ///   - fetchOffset: Number of results to skip
-    public init(
-        predicate: FDBPredicate<T>? = nil,
-        sortBy: [FDBSortDescriptor<T>] = [],
-        fetchLimit: Int? = nil,
-        fetchOffset: Int? = nil
-    ) {
-        self.predicate = predicate
-        self.sortBy = sortBy
-        self.fetchLimit = fetchLimit
-        self.fetchOffset = fetchOffset
+    /// Initialize an empty query
+    public init() {
+        self.predicates = []
+        self.sortDescriptors = []
+        self.fetchLimit = nil
+        self.fetchOffset = nil
+    }
+
+    // MARK: - Fluent API
+
+    /// Add a filter predicate
+    public func `where`(_ predicate: Predicate<T>) -> Query<T> {
+        var copy = self
+        copy.predicates.append(predicate)
+        return copy
+    }
+
+    /// Add sort order (ascending)
+    public func orderBy<V: Comparable & Sendable>(_ keyPath: KeyPath<T, V>) -> Query<T> {
+        var copy = self
+        copy.sortDescriptors.append(SortDescriptor(keyPath: keyPath, order: .ascending))
+        return copy
+    }
+
+    /// Add sort order with direction
+    public func orderBy<V: Comparable & Sendable>(_ keyPath: KeyPath<T, V>, _ order: SortOrder) -> Query<T> {
+        var copy = self
+        copy.sortDescriptors.append(SortDescriptor(keyPath: keyPath, order: order))
+        return copy
+    }
+
+    /// Set maximum number of results
+    public func limit(_ count: Int) -> Query<T> {
+        var copy = self
+        copy.fetchLimit = count
+        return copy
+    }
+
+    /// Set number of results to skip
+    public func offset(_ count: Int) -> Query<T> {
+        var copy = self
+        copy.fetchOffset = count
+        return copy
     }
 }
 
-// MARK: - FDBPredicate
+// MARK: - Predicate
 
-/// Predicate for filtering models
+/// Type-safe predicate for filtering models
 ///
-/// Provides a type-safe way to express filter conditions.
-///
-/// **Usage**:
+/// Use operator overloads on KeyPaths to create predicates:
 /// ```swift
-/// // Simple field comparison
-/// let predicate: FDBPredicate<User> = .field("isActive", .equals, true)
-///
-/// // Combined predicates
-/// let predicate: FDBPredicate<User> = .and([
-///     .field("age", .greaterThan, 18),
-///     .field("city", .equals, "Tokyo")
-/// ])
+/// \.email == "alice@example.com"
+/// \.age > 18
+/// \.name != nil
+/// \.status.in(["active", "pending"])
 /// ```
-///
-/// **Limitations**:
-/// - **Nested fields not supported**: Field names must be top-level properties only.
-///   Dot notation (e.g., "address.city") will throw an error at runtime.
-///   To query nested data, flatten the structure or use separate index fields.
-///
-/// - **Type-safe comparison**: Numeric comparisons preserve proper ordering
-///   (Int, Double, etc. are compared numerically, not as strings).
-public indirect enum FDBPredicate<T: Persistable>: Sendable {
-    /// Compare a field value
-    case field(String, FDBComparison, any Sendable)
+public indirect enum Predicate<T: Persistable>: Sendable {
+    /// Field comparison with a value
+    case comparison(FieldComparison<T>)
 
     /// All predicates must match (AND)
-    case and([FDBPredicate<T>])
+    case and([Predicate<T>])
 
     /// Any predicate must match (OR)
-    case or([FDBPredicate<T>])
+    case or([Predicate<T>])
 
     /// Negate the predicate (NOT)
-    case not(FDBPredicate<T>)
+    case not(Predicate<T>)
 
     /// Always true
     case `true`
 
     /// Always false
     case `false`
+
+    // MARK: - Logical Operators
+
+    /// Combine predicates with AND
+    public static func && (lhs: Predicate<T>, rhs: Predicate<T>) -> Predicate<T> {
+        switch (lhs, rhs) {
+        case (.and(let left), .and(let right)):
+            return .and(left + right)
+        case (.and(let left), _):
+            return .and(left + [rhs])
+        case (_, .and(let right)):
+            return .and([lhs] + right)
+        default:
+            return .and([lhs, rhs])
+        }
+    }
+
+    /// Combine predicates with OR
+    public static func || (lhs: Predicate<T>, rhs: Predicate<T>) -> Predicate<T> {
+        switch (lhs, rhs) {
+        case (.or(let left), .or(let right)):
+            return .or(left + right)
+        case (.or(let left), _):
+            return .or(left + [rhs])
+        case (_, .or(let right)):
+            return .or([lhs] + right)
+        default:
+            return .or([lhs, rhs])
+        }
+    }
+
+    /// Negate a predicate
+    public static prefix func ! (predicate: Predicate<T>) -> Predicate<T> {
+        .not(predicate)
+    }
 }
 
-// MARK: - FDBComparison
+// MARK: - FieldComparison
+
+/// Represents a comparison of a field value
+public struct FieldComparison<T: Persistable>: @unchecked Sendable {
+    /// The field's KeyPath (type-erased)
+    public let keyPath: AnyKeyPath
+
+    /// The comparison operator
+    public let op: ComparisonOperator
+
+    /// The value to compare against (type-erased)
+    public let value: AnySendable
+
+    /// Create a field comparison
+    public init<V: Sendable>(keyPath: KeyPath<T, V>, op: ComparisonOperator, value: V) {
+        self.keyPath = keyPath
+        self.op = op
+        self.value = AnySendable(value)
+    }
+
+    /// Create a nil comparison
+    public init<V>(keyPath: KeyPath<T, V?>, op: ComparisonOperator) {
+        self.keyPath = keyPath
+        self.op = op
+        self.value = AnySendable(Optional<Int>.none as Any)
+    }
+
+    /// Create an IN comparison
+    public init<V: Sendable>(keyPath: KeyPath<T, V>, values: [V]) {
+        self.keyPath = keyPath
+        self.op = .in
+        self.value = AnySendable(values)
+    }
+
+    /// Get the field name using Persistable's fieldName method
+    public var fieldName: String {
+        T.fieldName(for: keyPath)
+    }
+}
+
+// MARK: - ComparisonOperator
 
 /// Comparison operators for predicates
-public enum FDBComparison: Sendable, Equatable {
-    /// Equal to
-    case equals
-
-    /// Not equal to
-    case notEquals
-
-    /// Less than
-    case lessThan
-
-    /// Less than or equal to
-    case lessThanOrEquals
-
-    /// Greater than
-    case greaterThan
-
-    /// Greater than or equal to
-    case greaterThanOrEquals
-
-    /// String contains substring
-    case contains
-
-    /// String begins with prefix
-    case beginsWith
-
-    /// String ends with suffix
-    case endsWith
-
-    /// Value is in array
-    case `in`
+public enum ComparisonOperator: String, Sendable {
+    case equal = "=="
+    case notEqual = "!="
+    case lessThan = "<"
+    case lessThanOrEqual = "<="
+    case greaterThan = ">"
+    case greaterThanOrEqual = ">="
+    case contains = "contains"
+    case hasPrefix = "hasPrefix"
+    case hasSuffix = "hasSuffix"
+    case `in` = "in"
+    case isNil = "isNil"
+    case isNotNil = "isNotNil"
 }
 
-// MARK: - FDBSortDescriptor
+// MARK: - AnySendable
 
-/// Describes how to sort fetch results
-///
-/// **Usage**:
-/// ```swift
-/// let sortBy: [FDBSortDescriptor<User>] = [
-///     .ascending("lastName"),
-///     .descending("createdAt")
-/// ]
-/// ```
-///
-/// **Limitations**:
-/// - **Nested fields not supported**: Sort key paths must be top-level properties only.
-///   Dot notation (e.g., "address.city") will throw an error at runtime.
-///
-/// - **Type-safe sorting**: Numeric values are sorted numerically (not as strings),
-///   ensuring proper ordering for Int, Double, Date, etc.
-public struct FDBSortDescriptor<T: Persistable>: Sendable {
-    /// Field name to sort by
-    public let keyPath: String
+/// Type-erased Sendable wrapper
+public struct AnySendable: @unchecked Sendable {
+    public let value: Any
+
+    public init(_ value: Any) {
+        self.value = value
+    }
+}
+
+// MARK: - SortDescriptor
+
+/// Describes how to sort query results
+public struct SortDescriptor<T: Persistable>: @unchecked Sendable {
+    /// The field's KeyPath (type-erased)
+    public let keyPath: AnyKeyPath
 
     /// Sort order
-    public let order: FDBSortOrder
+    public let order: SortOrder
 
-    /// Initialize with key path and order
-    public init(keyPath: String, order: FDBSortOrder) {
+    /// Create a sort descriptor
+    public init<V: Comparable & Sendable>(keyPath: KeyPath<T, V>, order: SortOrder = .ascending) {
         self.keyPath = keyPath
         self.order = order
     }
 
-    /// Create an ascending sort descriptor
-    public static func ascending(_ keyPath: String) -> Self {
-        Self(keyPath: keyPath, order: .ascending)
-    }
-
-    /// Create a descending sort descriptor
-    public static func descending(_ keyPath: String) -> Self {
-        Self(keyPath: keyPath, order: .descending)
+    /// Get the field name using Persistable's fieldName method
+    public var fieldName: String {
+        T.fieldName(for: keyPath)
     }
 }
 
 /// Sort order
-public enum FDBSortOrder: Sendable, Equatable {
+public enum SortOrder: String, Sendable {
     case ascending
     case descending
+}
+
+// MARK: - KeyPath Operators
+
+/// Equal comparison
+public func == <T: Persistable, V: Equatable & Sendable>(
+    lhs: KeyPath<T, V>,
+    rhs: V
+) -> Predicate<T> {
+    .comparison(FieldComparison(keyPath: lhs, op: .equal, value: rhs))
+}
+
+/// Not equal comparison
+public func != <T: Persistable, V: Equatable & Sendable>(
+    lhs: KeyPath<T, V>,
+    rhs: V
+) -> Predicate<T> {
+    .comparison(FieldComparison(keyPath: lhs, op: .notEqual, value: rhs))
+}
+
+/// Less than comparison
+public func < <T: Persistable, V: Comparable & Sendable>(
+    lhs: KeyPath<T, V>,
+    rhs: V
+) -> Predicate<T> {
+    .comparison(FieldComparison(keyPath: lhs, op: .lessThan, value: rhs))
+}
+
+/// Less than or equal comparison
+public func <= <T: Persistable, V: Comparable & Sendable>(
+    lhs: KeyPath<T, V>,
+    rhs: V
+) -> Predicate<T> {
+    .comparison(FieldComparison(keyPath: lhs, op: .lessThanOrEqual, value: rhs))
+}
+
+/// Greater than comparison
+public func > <T: Persistable, V: Comparable & Sendable>(
+    lhs: KeyPath<T, V>,
+    rhs: V
+) -> Predicate<T> {
+    .comparison(FieldComparison(keyPath: lhs, op: .greaterThan, value: rhs))
+}
+
+/// Greater than or equal comparison
+public func >= <T: Persistable, V: Comparable & Sendable>(
+    lhs: KeyPath<T, V>,
+    rhs: V
+) -> Predicate<T> {
+    .comparison(FieldComparison(keyPath: lhs, op: .greaterThanOrEqual, value: rhs))
+}
+
+// MARK: - Optional KeyPath Operators
+
+/// Check if optional field is nil
+public func == <T: Persistable, V>(
+    lhs: KeyPath<T, V?>,
+    rhs: V?.Type
+) -> Predicate<T> where V? == Optional<V> {
+    .comparison(FieldComparison(keyPath: lhs, op: .isNil))
+}
+
+/// Check if optional field is not nil
+public func != <T: Persistable, V>(
+    lhs: KeyPath<T, V?>,
+    rhs: V?.Type
+) -> Predicate<T> where V? == Optional<V> {
+    .comparison(FieldComparison(keyPath: lhs, op: .isNotNil))
+}
+
+// MARK: - String Predicate Extensions
+
+extension KeyPath where Root: Persistable, Value == String {
+    /// Check if string contains substring
+    public func contains(_ substring: String) -> Predicate<Root> {
+        .comparison(FieldComparison(keyPath: self, op: .contains, value: substring))
+    }
+
+    /// Check if string starts with prefix
+    public func hasPrefix(_ prefix: String) -> Predicate<Root> {
+        .comparison(FieldComparison(keyPath: self, op: .hasPrefix, value: prefix))
+    }
+
+    /// Check if string ends with suffix
+    public func hasSuffix(_ suffix: String) -> Predicate<Root> {
+        .comparison(FieldComparison(keyPath: self, op: .hasSuffix, value: suffix))
+    }
+}
+
+// MARK: - IN Predicate Extension
+
+extension KeyPath where Root: Persistable, Value: Equatable & Sendable {
+    /// Check if value is in array
+    public func `in`(_ values: [Value]) -> Predicate<Root> {
+        .comparison(FieldComparison(keyPath: self, values: values))
+    }
+}
+
+// MARK: - QueryExecutor
+
+/// Executor for fluent query API
+///
+/// **Usage**:
+/// ```swift
+/// let users = try await context.fetch(User.self)
+///     .where(\.isActive == true)
+///     .where(\.age > 18)
+///     .orderBy(\.name)
+///     .limit(10)
+///     .execute()
+/// ```
+public struct QueryExecutor<T: Persistable>: Sendable {
+    private let context: FDBContext
+    private var query: Query<T>
+
+    /// Initialize with context and query
+    public init(context: FDBContext, query: Query<T>) {
+        self.context = context
+        self.query = query
+    }
+
+    /// Add a filter predicate
+    public func `where`(_ predicate: Predicate<T>) -> QueryExecutor<T> {
+        var copy = self
+        copy.query = query.where(predicate)
+        return copy
+    }
+
+    /// Add sort order (ascending)
+    public func orderBy<V: Comparable & Sendable>(_ keyPath: KeyPath<T, V>) -> QueryExecutor<T> {
+        var copy = self
+        copy.query = query.orderBy(keyPath)
+        return copy
+    }
+
+    /// Add sort order with direction
+    public func orderBy<V: Comparable & Sendable>(_ keyPath: KeyPath<T, V>, _ order: SortOrder) -> QueryExecutor<T> {
+        var copy = self
+        copy.query = query.orderBy(keyPath, order)
+        return copy
+    }
+
+    /// Set maximum number of results
+    public func limit(_ count: Int) -> QueryExecutor<T> {
+        var copy = self
+        copy.query = query.limit(count)
+        return copy
+    }
+
+    /// Set number of results to skip
+    public func offset(_ count: Int) -> QueryExecutor<T> {
+        var copy = self
+        copy.query = query.offset(count)
+        return copy
+    }
+
+    /// Execute the query and return results
+    public func execute() async throws -> [T] {
+        try await context.fetch(query)
+    }
+
+    /// Execute the query and return count
+    public func count() async throws -> Int {
+        try await context.fetchCount(query)
+    }
+
+    /// Execute the query and return first result
+    public func first() async throws -> T? {
+        try await limit(1).execute().first
+    }
 }

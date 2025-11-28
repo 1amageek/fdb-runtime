@@ -22,8 +22,12 @@ import Synchronization
 /// // Save all changes atomically
 /// try await context.save()
 ///
-/// // Fetch models (type-safe)
-/// let users = try await context.fetch(FDBFetchDescriptor<User>())
+/// // Fetch models with Fluent API
+/// let users = try await context.fetch(User.self)
+///     .where(\.isActive == true)
+///     .orderBy(\.name)
+///     .limit(10)
+///     .execute()
 ///
 /// // Get by ID
 /// if let user = try await context.model(for: userId, as: User.self) {
@@ -40,8 +44,12 @@ public final class FDBContext: Sendable {
     /// The container that owns this context
     public let container: FDBContainer
 
-    /// Internal data store for FDB operations
-    private let dataStore: FDBDataStore
+    /// Internal data store for persistence operations
+    ///
+    /// This is typed as `any DataStore` to support different storage backends.
+    /// The default implementation is FDBDataStore, but can be replaced with
+    /// custom implementations for testing or alternative backends.
+    private let dataStore: any DataStore
 
     /// Change tracking state
     private let stateLock: Mutex<ContextState>
@@ -55,11 +63,21 @@ public final class FDBContext: Sendable {
     ///   - autosaveEnabled: Whether to automatically save after insert/delete (default: false)
     public init(container: FDBContainer, autosaveEnabled: Bool = false) {
         self.container = container
-        self.dataStore = FDBDataStore(
-            database: container.database,
-            subspace: container.subspace,
-            schema: container.schema
-        )
+        self.dataStore = container.dataStore
+        self.stateLock = Mutex(ContextState(autosaveEnabled: autosaveEnabled))
+    }
+
+    /// Initialize FDBContext with a custom DataStore
+    ///
+    /// This initializer is primarily for testing, allowing injection of mock stores.
+    ///
+    /// - Parameters:
+    ///   - container: The FDBContainer to use for storage
+    ///   - dataStore: Custom DataStore implementation
+    ///   - autosaveEnabled: Whether to automatically save after insert/delete (default: false)
+    internal init(container: FDBContainer, dataStore: any DataStore, autosaveEnabled: Bool = false) {
+        self.container = container
+        self.dataStore = dataStore
         self.stateLock = Mutex(ContextState(autosaveEnabled: autosaveEnabled))
     }
 
@@ -224,18 +242,32 @@ public final class FDBContext: Sendable {
         }
     }
 
-    /// Delete all models of a type matching a predicate
+    /// Delete all models of a type matching a query
+    ///
+    /// **Usage**:
+    /// ```swift
+    /// // Delete inactive users
+    /// try await context.delete(
+    ///     User.self,
+    ///     where: \.isActive == false
+    /// )
+    ///
+    /// // Delete all users
+    /// try await context.deleteAll(User.self)
+    /// ```
     ///
     /// - Parameters:
     ///   - type: The model type
-    ///   - predicate: Filter predicate (nil means all models of this type)
+    ///   - predicate: Optional predicate to filter models
     public func delete<T: Persistable>(
-        model type: T.Type,
-        where predicate: FDBPredicate<T>? = nil
+        _ type: T.Type,
+        where predicate: Predicate<T>
     ) async throws {
-        // Fetch models matching the predicate
-        let descriptor = FDBFetchDescriptor<T>(predicate: predicate)
-        let models = try await fetch(descriptor)
+        // Build query with predicate
+        let query = Query<T>().where(predicate)
+
+        // Fetch models matching the query
+        let models = try await fetch(query)
 
         // Mark each for deletion
         for model in models {
@@ -243,34 +275,64 @@ public final class FDBContext: Sendable {
         }
     }
 
+    /// Delete all models of a type
+    ///
+    /// **Usage**:
+    /// ```swift
+    /// try await context.deleteAll(User.self)
+    /// ```
+    ///
+    /// - Parameter type: The model type
+    public func deleteAll<T: Persistable>(_ type: T.Type) async throws {
+        let models = try await fetch(Query<T>())
+        for model in models {
+            delete(model)
+        }
+    }
+
     // MARK: - Fetch
 
-    /// Fetch models matching the descriptor
+    /// Create a query executor for fetching models with Fluent API
+    ///
+    /// **Usage**:
+    /// ```swift
+    /// // Fetch all users
+    /// let allUsers = try await context.fetch(User.self).execute()
+    ///
+    /// // Fetch with filters and sorting
+    /// let users = try await context.fetch(User.self)
+    ///     .where(\.isActive == true)
+    ///     .where(\.age > 18)
+    ///     .orderBy(\.name)
+    ///     .limit(10)
+    ///     .execute()
+    ///
+    /// // Get first matching result
+    /// let user = try await context.fetch(User.self)
+    ///     .where(\.email == "alice@example.com")
+    ///     .first()
+    ///
+    /// // Get count
+    /// let count = try await context.fetch(User.self)
+    ///     .where(\.isActive == true)
+    ///     .count()
+    /// ```
+    ///
+    /// - Parameter type: The model type
+    /// - Returns: A QueryExecutor for building and executing the query
+    public func fetch<T: Persistable>(_ type: T.Type) -> QueryExecutor<T> {
+        QueryExecutor(context: self, query: Query<T>())
+    }
+
+    /// Fetch models matching a query (internal use)
     ///
     /// This method considers unsaved changes:
     /// - Models pending insertion are included if they match the predicate
     /// - Models pending deletion are excluded from results
     ///
-    /// **Usage**:
-    /// ```swift
-    /// // Fetch all users
-    /// let users = try await context.fetch(FDBFetchDescriptor<User>())
-    ///
-    /// // Fetch with predicate
-    /// let activeUsers = try await context.fetch(
-    ///     FDBFetchDescriptor<User>(
-    ///         predicate: .field("isActive", .equals, true),
-    ///         sortBy: [.ascending("name")],
-    ///         fetchLimit: 10
-    ///     )
-    /// )
-    /// ```
-    ///
-    /// - Parameter descriptor: The fetch descriptor
+    /// - Parameter query: The query
     /// - Returns: Array of matching models
-    public func fetch<T: Persistable>(
-        _ descriptor: FDBFetchDescriptor<T>
-    ) async throws -> [T] {
+    internal func fetch<T: Persistable>(_ query: Query<T>) async throws -> [T] {
         // Get pending changes for this type
         let (pendingInserts, pendingDeleteKeys) = stateLock.withLock { state -> ([T], Set<ModelKey>) in
             // Get inserted models of type T
@@ -284,7 +346,7 @@ public final class FDBContext: Sendable {
         }
 
         // Fetch from data store
-        var results = try await dataStore.fetch(descriptor)
+        var results = try await dataStore.fetch(query)
 
         // Exclude models pending deletion
         if !pendingDeleteKeys.isEmpty {
@@ -306,7 +368,7 @@ public final class FDBContext: Sendable {
         return results
     }
 
-    /// Fetch count of models matching the descriptor
+    /// Fetch count of models matching a query (internal use)
     ///
     /// This method considers unsaved changes:
     /// - Models pending insertion are counted if they match the predicate
@@ -316,11 +378,9 @@ public final class FDBContext: Sendable {
     /// - If no pending changes affect the count, uses index-based counting
     /// - Falls back to full fetch when pending changes exist
     ///
-    /// - Parameter descriptor: The fetch descriptor
+    /// - Parameter query: The query
     /// - Returns: Count of matching models
-    public func fetchCount<T: Persistable>(
-        _ descriptor: FDBFetchDescriptor<T>
-    ) async throws -> Int {
+    internal func fetchCount<T: Persistable>(_ query: Query<T>) async throws -> Int {
         // Check if there are pending changes for this type
         let (hasInserts, hasDeletes) = stateLock.withLock { state -> (Bool, Bool) in
             let inserts = state.insertedModels.values.contains { $0 is T }
@@ -330,11 +390,11 @@ public final class FDBContext: Sendable {
 
         // If no pending changes, use efficient data store counting
         if !hasInserts && !hasDeletes {
-            return try await dataStore.fetchCount(descriptor)
+            return try await dataStore.fetchCount(query)
         }
 
         // With pending changes, we need to fetch to get accurate count
-        let results = try await fetch(descriptor)
+        let results = try await fetch(query)
         return results.count
     }
 

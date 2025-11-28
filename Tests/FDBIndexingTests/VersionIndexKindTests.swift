@@ -16,33 +16,22 @@ struct VersionIndexKindTests {
         #expect(VersionIndexKind.identifier == "version")
     }
 
-    @Test("VersionIndexKind has flat subspace structure")
+    @Test("VersionIndexKind has hierarchical subspace structure")
     func testSubspaceStructure() {
-        #expect(VersionIndexKind.subspaceStructure == .flat)
+        // Version indexes store history hierarchically by versionstamp
+        #expect(VersionIndexKind.subspaceStructure == .hierarchical)
     }
 
     // MARK: - Type Validation Tests
 
-    @Test("VersionIndexKind validates single field")
-    func testValidateSingleField() throws {
-        // Any type (not actually used)
+    @Test("VersionIndexKind accepts any types")
+    func testAcceptsAnyTypes() throws {
+        // Version index accepts any types without validation
         try VersionIndexKind.validateTypes([Int.self])
         try VersionIndexKind.validateTypes([String.self])
         try VersionIndexKind.validateTypes([Double.self])
-    }
-
-    @Test("VersionIndexKind rejects multiple fields")
-    func testRejectMultipleFields() {
-        #expect(throws: IndexTypeValidationError.self) {
-            try VersionIndexKind.validateTypes([Int.self, String.self])
-        }
-    }
-
-    @Test("VersionIndexKind rejects empty fields")
-    func testRejectEmptyFields() {
-        #expect(throws: IndexTypeValidationError.self) {
-            try VersionIndexKind.validateTypes([])
-        }
+        try VersionIndexKind.validateTypes([Int.self, String.self])
+        try VersionIndexKind.validateTypes([])
     }
 
     // MARK: - Codable Tests

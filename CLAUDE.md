@@ -429,7 +429,7 @@ import FDBRuntime
 // IMPORTANT: Call this globally before creating any FDBContainer
 try await FDBClient.initialize()
 
-// 2. Create schema and configuration
+// 2. Create schema
 let schema = Schema(
     entities: [
         // Define your entities here
@@ -443,10 +443,8 @@ let schema = Schema(
     version: Schema.Version(1, 0, 0)
 )
 
-let config = FDBConfiguration(schema: schema)
-
 // 3. Create container (SwiftData-like API)
-let container = try FDBContainer(configurations: [config])
+let container = try FDBContainer(for: schema)
 
 // 4. Access main context
 let context = await container.mainContext
@@ -467,10 +465,10 @@ try await context.save()
 #### Key Concepts
 
 **FDBConfiguration**: SwiftData-compatible configuration object that specifies:
-- Schema (entities and indexes)
-- Cluster file path (optional)
+- Schema (entities and indexes) - subset of main schema this config handles
+- URL (optional) - FDB cluster file URL
 - API version (optional, for documentation only)
-- In-memory mode (future feature)
+- Index configurations - runtime parameters for special indexes (vector, full-text)
 
 **FDBContainer**: Manages:
 - Database connection
@@ -499,7 +497,8 @@ try await context.save()
            try await FDBClient.initialize()
 
            // Create containers as needed
-           let container = try FDBContainer(configurations: [config])
+           let schema = Schema([User.self, Order.self])
+           let container = try FDBContainer(for: schema)
 
            // ... rest of application
        }
@@ -549,19 +548,16 @@ struct MyApp {
             version: Schema.Version(1, 0, 0)
         )
 
-        // 3. Create configuration
-        let config = FDBConfiguration(schema: schema)
+        // 3. Create container (SwiftData-like API)
+        let container = try FDBContainer(for: schema)
 
-        // 4. Create container (SwiftData-like API)
-        let container = try FDBContainer(configurations: [config])
-
-        // 5. Get directory for users
+        // 4. Get directory for users
         let userSubspace = try await container.getOrOpenDirectory(path: ["users"])
 
-        // 6. Access main context
+        // 5. Access main context
         let context = await container.mainContext
 
-        // 7. Insert data
+        // 6. Insert data
         let userData = // ... serialize your data
         context.insert(
             data: userData,
@@ -570,7 +566,7 @@ struct MyApp {
             subspace: userSubspace
         )
 
-        // 8. Save changes
+        // 7. Save changes
         try await context.save()
 
         print("User saved successfully")
@@ -597,7 +593,7 @@ let container = FDBContainer(
     database: database,
     schema: schema,
     migrations: [],
-    rootSubspace: nil,  // Optional: for multi-tenant isolation
+    subspace: nil,  // Optional: for multi-tenant isolation
     directoryLayer: nil,  // Optional: for test isolation
     logger: nil  // Optional: custom logger
 )
@@ -634,9 +630,8 @@ struct FDBContainerTests {
 
         // Create container with test DirectoryLayer
         let schema = Schema(entities: [], version: Schema.Version(1, 0, 0))
-        let config = FDBConfiguration(schema: schema)
         let container = try FDBContainer(
-            configurations: [config],
+            for: schema,
             directoryLayer: testDirectoryLayer
         )
 

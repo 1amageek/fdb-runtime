@@ -251,46 +251,122 @@ public struct MaxIndexKind: IndexKind {
     public init() {}
 }
 
-// MARK: - VersionIndexKind
+// MARK: - AverageIndexKind
 
-/// Index for tracking record versions
+/// Aggregation index for computing average values by grouping fields
 ///
 /// **Usage**:
 /// ```swift
 /// @Persistable
-/// struct User {
-///     #Index<User>([\.version], type: VersionIndexKind())
-///     var version: Int64
+/// struct Review {
+///     #Index<Review>([\.productID, \.rating], type: AverageIndexKind())
+///     var productID: Int64
+///     var rating: Int64  // Rating * 100 (e.g., 4.5 stars = 450)
 /// }
 /// ```
 ///
-/// **Key Structure**: `[indexSubspace][version][primaryKey] = ''`
+/// **Key Structure**:
+/// - `[indexSubspace][groupKey][\"sum\"] = Int64(sum)`
+/// - `[indexSubspace][groupKey][\"count\"] = Int64(count)`
 ///
 /// **Supports**:
-/// - Range queries by version
-/// - Find records modified after a specific version
-public struct VersionIndexKind: IndexKind {
-    public static let identifier = "version"
-    public static let subspaceStructure = SubspaceStructure.flat
+/// - Get average by group key (average = sum / count)
+/// - Atomic increment/decrement on insert/update/delete
+///
+/// **Important**: Use Int64 for exact arithmetic
+/// - ✅ Multiply by 100 or 1000 for decimal precision
+/// - ❌ Do not use Double/Float (floating-point errors accumulate)
+public struct AverageIndexKind: IndexKind {
+    public static let identifier = "average"
+    public static let subspaceStructure = SubspaceStructure.aggregation
 
     public static func validateTypes(_ types: [Any.Type]) throws {
-        guard types.count == 1 else {
+        guard types.count >= 2 else {
             throw IndexTypeValidationError.invalidTypeCount(
                 index: identifier,
-                expected: 1,
+                expected: 2,
                 actual: types.count
             )
         }
-        // Validate version field is Comparable (typically Int64)
-        let versionType = types[0]
-        guard TypeValidation.isComparable(versionType) else {
+        // Validate grouping fields (all but last) are Comparable
+        let groupingTypes = types.dropLast()
+        for type in groupingTypes {
+            guard TypeValidation.isComparable(type) else {
+                throw IndexTypeValidationError.unsupportedType(
+                    index: identifier,
+                    type: type,
+                    reason: "Average index grouping fields must be Comparable"
+                )
+            }
+        }
+        // Validate value field (last) is Numeric
+        let valueType = types.last!
+        guard TypeValidation.isNumeric(valueType) else {
             throw IndexTypeValidationError.unsupportedType(
                 index: identifier,
-                type: versionType,
-                reason: "Version index requires Comparable type"
+                type: valueType,
+                reason: "Average index value field must be Numeric"
             )
         }
     }
 
     public init() {}
+}
+
+// MARK: - VersionIndexKind
+
+/// Version history retention strategy
+///
+/// **Strategies**:
+/// - `.keepAll`: Keep all versions (unlimited history)
+/// - `.keepLast(n)`: Keep only the last N versions
+/// - `.keepForDuration(seconds)`: Keep versions for specific duration
+public enum VersionHistoryStrategy: Sendable, Hashable, Codable {
+    /// Keep all versions (unlimited history)
+    case keepAll
+
+    /// Keep only the last N versions
+    case keepLast(Int)
+
+    /// Keep versions for a specific duration (in seconds)
+    case keepForDuration(TimeInterval)
+}
+
+/// Index for tracking record versions with history retention
+///
+/// **Usage**:
+/// ```swift
+/// @Persistable
+/// struct Document {
+///     #Index<Document>([\.id], type: VersionIndexKind(strategy: .keepLast(10)))
+///     var id: UUID
+///     var title: String
+///     var content: String
+/// }
+/// ```
+///
+/// **Key Structure**: `[indexSubspace][primaryKey][versionstamp] = data`
+///
+/// **Supports**:
+/// - Version history tracking
+/// - Point-in-time queries
+/// - Rollback to previous versions
+/// - Automatic cleanup based on retention strategy
+public struct VersionIndexKind: IndexKind {
+    public static let identifier = "version"
+    public static let subspaceStructure = SubspaceStructure.hierarchical
+
+    /// Version history retention strategy
+    public let strategy: VersionHistoryStrategy
+
+    /// Initialize version index kind
+    ///
+    /// - Parameter strategy: Version history retention strategy (default: keepAll)
+    public init(strategy: VersionHistoryStrategy = .keepAll) {
+        self.strategy = strategy
+    }
+
+    public static func validateTypes(_ types: [Any.Type]) throws {
+        // Version index accepts any types
+    }
 }

@@ -23,10 +23,9 @@ import Logging
 /// // 1. Initialize FDB (once at app startup)
 /// try await FDBClient.initialize()
 ///
-/// // 2. Create container
+/// // 2. Create container with schema
 /// let schema = Schema([User.self, Order.self])
-/// let config = FDBConfiguration(schema: schema)
-/// let container = try FDBContainer(configurations: [config])
+/// let container = try FDBContainer(for: schema)
 ///
 /// // 3. Access main context (SwiftData-like)
 /// let context = await container.mainContext
@@ -64,6 +63,26 @@ public final class FDBContainer: Sendable {
     /// Configurations (SwiftData-compatible)
     public let configurations: [FDBConfiguration]
 
+    /// Aggregated index configurations from all FDBConfiguration objects
+    ///
+    /// Key: indexName (e.g., "Document_embedding", "Article_content")
+    /// Value: Array of configurations (supports multiple configs per index, e.g., multi-language)
+    ///
+    /// **Usage**:
+    /// ```swift
+    /// // Get single configuration
+    /// if let config = container.indexConfiguration(for: "Document_embedding", as: VectorIndexConfiguration<Document>.self) {
+    ///     print("Dimensions: \(config.dimensions)")
+    /// }
+    ///
+    /// // Get multiple configurations (multi-language full-text)
+    /// let configs = container.indexConfigurations(for: "Article_content", as: FullTextIndexConfiguration<Article>.self)
+    /// for config in configs {
+    ///     print("Language: \(config.language)")
+    /// }
+    /// ```
+    public let indexConfigurations: [String: [any IndexConfiguration]]
+
     /// Migrations (schema evolution) - legacy API
     private let migrations: [Migration]
 
@@ -85,15 +104,39 @@ public final class FDBContainer: Sendable {
     /// **Usage**:
     /// ```swift
     /// // Default subspace (auto-created)
-    /// let container = try FDBContainer(configurations: [config])
+    /// let container = try FDBContainer(for: schema)
     /// // → Data at: [fdb]/R/..., [fdb]/I/...
     ///
-    /// // Custom subspace (multi-tenant)
+    /// // Custom subspace (multi-tenant) - use low-level init
     /// let tenantSubspace = Subspace(prefix: Tuple("tenant", tenantID).pack())
-    /// let container = FDBContainer(..., subspace: tenantSubspace)
+    /// let container = FDBContainer(database: db, schema: schema, subspace: tenantSubspace)
     /// // → Data at: tenant/[tenantID]/R/..., tenant/[tenantID]/I/...
     /// ```
     public let subspace: Subspace
+
+    /// Data store for persistence operations
+    ///
+    /// The data store handles all low-level persistence operations.
+    /// Default is FDBDataStore, but can be replaced with custom implementations
+    /// for testing or alternative backends.
+    ///
+    /// **SwiftData Comparison**:
+    /// - SwiftData uses `DataStore` protocol with `DefaultStore` implementation
+    /// - fdb-runtime uses `DataStore` protocol with `FDBDataStore` implementation
+    ///
+    /// **Usage**:
+    /// ```swift
+    /// // Default: FDBDataStore is created automatically
+    /// let container = try FDBContainer(for: schema)
+    ///
+    /// // Custom: Inject a different DataStore (e.g., for testing)
+    /// let customStore = CustomDataStore(...)
+    /// let container = try FDBContainer(
+    ///     for: schema,
+    ///     dataStore: customStore
+    /// )
+    /// ```
+    public let dataStore: any DataStore
 
     /// Main context (SwiftData-like API)
     /// Created lazily on first access
@@ -102,7 +145,7 @@ public final class FDBContainer: Sendable {
 
     // MARK: - Initialization
 
-    /// Initialize FDBContainer with configurations (SwiftData-compatible)
+    /// Initialize FDBContainer with schema and configurations (SwiftData-compatible)
     ///
     /// **Recommended**: Use this initializer for SwiftData-like API.
     ///
@@ -113,57 +156,119 @@ public final class FDBContainer: Sendable {
     /// try await FDBClient.initialize()
     ///
     /// // Later, create containers as needed
-    /// let schema = Schema([User.self, Order.self])
-    /// let config = FDBConfiguration(schema: schema)
-    /// let container = try FDBContainer(configurations: [config])
+    /// let schema = Schema([User.self, Order.self, Product.self])
+    /// let container = try FDBContainer(for: schema)
     /// ```
     ///
     /// - Parameters:
-    ///   - configurations: Array of FDBConfiguration objects
+    ///   - schema: The complete schema defining all entities
+    ///   - configurations: Array of FDBConfiguration objects for model-specific settings (optional)
     ///   - migrations: Array of migrations for schema evolution (optional)
     ///   - directoryLayer: Optional custom DirectoryLayer (for test isolation)
+    ///   - dataStore: Optional custom DataStore (for testing or alternative backends)
     ///
-    /// **Example**:
+    /// **Example - Basic**:
     /// ```swift
     /// let schema = Schema([User.self, Order.self])
-    /// let config = FDBConfiguration(schema: schema)
-    /// let container = try FDBContainer(configurations: [config])
-    ///
-    /// // Access main context
-    /// let context = await container.mainContext
-    /// context.insert(user)
-    /// try await context.save()
+    /// let container = try FDBContainer(for: schema)
     /// ```
     ///
-    /// - Throws: Error if database connection fails or no configurations provided
+    /// **Example - With configurations for model-specific settings**:
+    /// ```swift
+    /// let schema = Schema([User.self, Order.self, Product.self])
+    /// let container = try FDBContainer(
+    ///     for: schema,
+    ///     configurations: [
+    ///         FDBConfiguration(
+    ///             name: "main",
+    ///             schema: Schema([User.self, Product.self])  // This config handles User and Product
+    ///         ),
+    ///         FDBConfiguration(
+    ///             name: "orders",
+    ///             schema: Schema([Order.self])  // This config handles Order
+    ///         )
+    ///     ]
+    /// )
+    /// ```
+    ///
+    /// **Example - With index configurations**:
+    /// ```swift
+    /// let schema = Schema([Document.self])
+    /// let container = try FDBContainer(
+    ///     for: schema,
+    ///     configurations: [
+    ///         FDBConfiguration(
+    ///             indexConfigurations: [
+    ///                 VectorIndexConfiguration<Document>(
+    ///                     keyPath: \.embedding,
+    ///                     dimensions: 1536
+    ///                 )
+    ///             ]
+    ///         )
+    ///     ]
+    /// )
+    /// ```
+    ///
+    /// - Throws: Error if database connection fails or validation fails
     public init(
-        configurations: [FDBConfiguration],
+        for schema: Schema,
+        configurations: [FDBConfiguration] = [],
         migrations: [Migration] = [],
-        directoryLayer: FoundationDB.DirectoryLayer? = nil
+        directoryLayer: FoundationDB.DirectoryLayer? = nil,
+        dataStore: (any DataStore)? = nil
     ) throws {
-        guard let firstConfig = configurations.first else {
-            throw FDBRuntimeError.internalError("At least one configuration is required")
+        // Validate schema is not empty
+        guard !schema.entities.isEmpty else {
+            throw FDBRuntimeError.internalError("Schema must contain at least one entity")
         }
 
+        // Get first configuration for connection settings (or use defaults)
+        let firstConfig = configurations.first
+
         // Note: API version selection must be done globally before creating FDBContainer
-        // If apiVersion is specified in configuration, it's for documentation purposes only
-        // The actual API version selection should be done via FDBClient at application startup
-        if let apiVersion = firstConfig.apiVersion {
-            // Log warning if apiVersion is specified (it should be selected globally before)
+        if let apiVersion = firstConfig?.apiVersion {
             let logger = Logger(label: "com.fdb.runtime.container")
             logger.warning("API version \(apiVersion) specified in configuration, but API version must be selected globally before FDBContainer initialization. This value is ignored.")
         }
 
-        // Open database connection
-        let database = try FDBClient.openDatabase(clusterFilePath: firstConfig.clusterFilePath)
+        // Open database connection (use first non-nil url from configurations)
+        let clusterFilePath = configurations.compactMap(\.url).first?.path
+        let database = try FDBClient.openDatabase(clusterFilePath: clusterFilePath)
+
+        // Validate configuration schemas are subsets of the main schema
+        let schemaEntityNames = Set(schema.entities.map(\.name))
+        for config in configurations {
+            if let configSchema = config.schema {
+                let configEntityNames = Set(configSchema.entities.map(\.name))
+                let unknownEntities = configEntityNames.subtracting(schemaEntityNames)
+                if !unknownEntities.isEmpty {
+                    throw FDBRuntimeError.internalError(
+                        "Configuration '\(config.name ?? "unnamed")' references unknown entities: \(unknownEntities.sorted()). " +
+                        "All entities must be defined in the top-level schema."
+                    )
+                }
+            }
+        }
+
+        // Aggregate index configurations from all configurations
+        let aggregatedIndexConfigs = Self.aggregateIndexConfigurations(from: configurations)
+
+        // Validate index configurations reference entities in schema
+        try Self.validateIndexConfigurations(
+            indexConfigurations: aggregatedIndexConfigs,
+            schema: schema
+        )
 
         // Initialize properties
         self.database = database
-        self.schema = firstConfig.schema
+        self.schema = schema
         self.configurations = configurations
+        self.indexConfigurations = aggregatedIndexConfigs
         self.migrations = migrations
         self._migrationPlan = nil
-        self.subspace = Subspace(prefix: Tuple("fdb").pack())  // Default subspace
+
+        let defaultSubspace = Subspace(prefix: Tuple("fdb").pack())
+        self.subspace = defaultSubspace
         self.logger = Logger(label: "com.fdb.runtime.container")
         self._mainContext = nil
 
@@ -172,6 +277,64 @@ public final class FDBContainer: Sendable {
             self.directoryLayer = customLayer
         } else {
             self.directoryLayer = database.makeDirectoryLayer()
+        }
+
+        // Initialize DataStore (use provided or create default FDBDataStore)
+        if let customDataStore = dataStore {
+            self.dataStore = customDataStore
+        } else {
+            self.dataStore = FDBDataStore(
+                database: database,
+                subspace: defaultSubspace,
+                schema: schema
+            )
+        }
+    }
+
+    /// Validate that index configurations are consistent with schema
+    ///
+    /// **Validation Rules**:
+    /// 1. Model must exist in schema
+    /// 2. Index must exist in schema (by indexName)
+    /// 3. kindIdentifier must match between IndexConfiguration and IndexDescriptor
+    ///
+    /// - Parameters:
+    ///   - indexConfigurations: Aggregated index configurations by indexName
+    ///   - schema: The schema to validate against
+    /// - Throws: IndexConfigurationError if validation fails
+    private static func validateIndexConfigurations(
+        indexConfigurations: [String: [any IndexConfiguration]],
+        schema: Schema
+    ) throws {
+        let schemaEntityNames = Set(schema.entities.map(\.name))
+
+        for (indexName, configs) in indexConfigurations {
+            for config in configs {
+                // 1. Validate model exists in schema
+                let modelTypeName = config.modelTypeName
+                guard schemaEntityNames.contains(modelTypeName) else {
+                    throw IndexConfigurationError.invalidConfiguration(
+                        indexName: indexName,
+                        reason: "Model '\(modelTypeName)' is not defined in the schema"
+                    )
+                }
+
+                // 2. Validate index exists in schema
+                guard let descriptor = schema.indexDescriptor(named: indexName) else {
+                    throw IndexConfigurationError.unknownIndex(indexName: indexName)
+                }
+
+                // 3. Validate kindIdentifier matches
+                let descriptorKindIdentifier = type(of: descriptor.kind).identifier
+                let configKindIdentifier = type(of: config).kindIdentifier
+                guard descriptorKindIdentifier == configKindIdentifier else {
+                    throw IndexConfigurationError.indexKindMismatch(
+                        indexName: indexName,
+                        expected: descriptorKindIdentifier,
+                        actual: configKindIdentifier
+                    )
+                }
+            }
         }
     }
 
@@ -225,14 +388,19 @@ public final class FDBContainer: Sendable {
         migrations: [Migration] = [],
         subspace: Subspace? = nil,
         directoryLayer: FoundationDB.DirectoryLayer? = nil,
-        logger: Logger? = nil
+        logger: Logger? = nil,
+        indexConfigurations: [any IndexConfiguration] = [],
+        dataStore: (any DataStore)? = nil
     ) {
         self.database = database
         self.schema = schema
         self.configurations = []  // Empty for low-level API
+        self.indexConfigurations = Self.aggregateIndexConfigurations(indexConfigurations)
         self.migrations = migrations
         self._migrationPlan = nil
-        self.subspace = subspace ?? Subspace(prefix: Tuple("fdb").pack())
+
+        let effectiveSubspace = subspace ?? Subspace(prefix: Tuple("fdb").pack())
+        self.subspace = effectiveSubspace
         self.logger = logger ?? Logger(label: "com.fdb.runtime.container")
         self._mainContext = nil
 
@@ -241,6 +409,17 @@ public final class FDBContainer: Sendable {
             self.directoryLayer = customLayer
         } else {
             self.directoryLayer = database.makeDirectoryLayer()
+        }
+
+        // Initialize DataStore (use provided or create default FDBDataStore)
+        if let customDataStore = dataStore {
+            self.dataStore = customDataStore
+        } else {
+            self.dataStore = FDBDataStore(
+                database: database,
+                subspace: effectiveSubspace,
+                schema: schema
+            )
         }
     }
 
@@ -642,12 +821,12 @@ extension FDBContainer {
     /// - Parameters:
     ///   - schema: The current VersionedSchema type
     ///   - migrationPlan: The SchemaMigrationPlan type defining migration path
-    ///   - clusterFilePath: Optional path to cluster file
+    ///   - url: Optional URL to FoundationDB cluster file
     /// - Throws: Error if initialization fails
     public convenience init<S: VersionedSchema, P: SchemaMigrationPlan>(
         for schema: S.Type,
         migrationPlan: P.Type,
-        clusterFilePath: String? = nil
+        url: URL? = nil
     ) throws {
         // Validate migration plan
         try P.validate()
@@ -656,7 +835,7 @@ extension FDBContainer {
         let schemaInstance = S.makeSchema()
 
         // Open database connection
-        let database = try FDBClient.openDatabase(clusterFilePath: clusterFilePath)
+        let database = try FDBClient.openDatabase(clusterFilePath: url?.path)
 
         // Create default subspace
         let subspace = Subspace(prefix: Tuple("fdb").pack())
@@ -685,13 +864,17 @@ extension FDBContainer {
         directoryLayer: FoundationDB.DirectoryLayer,
         logger: Logger
     ) {
+        // Aggregate index configurations from all FDBConfiguration objects
+        let allIndexConfigs = configurations.flatMap(\.indexConfigurations)
+
         self.init(
             database: database,
             schema: schema,
             migrations: migrations,
             subspace: subspace,
             directoryLayer: directoryLayer,
-            logger: logger
+            logger: logger,
+            indexConfigurations: allIndexConfigs
         )
         // Note: migrationPlan is set via _setMigrationPlan after init
         _setMigrationPlan(migrationPlan)
@@ -861,5 +1044,121 @@ extension FDBContainer {
         }
 
         return registry
+    }
+}
+
+// MARK: - Index Configuration Management
+
+extension FDBContainer {
+
+    /// Get a single index configuration for the specified index
+    ///
+    /// Use this method when you expect exactly one configuration for an index
+    /// (e.g., vector index with HNSW parameters).
+    ///
+    /// - Parameters:
+    ///   - indexName: Name of the index (e.g., "Document_embedding")
+    ///   - type: The expected configuration type
+    /// - Returns: The configuration if found and matches the type, nil otherwise
+    ///
+    /// **Example**:
+    /// ```swift
+    /// if let config = container.indexConfiguration(
+    ///     for: "Document_embedding",
+    ///     as: VectorIndexConfiguration<Document>.self
+    /// ) {
+    ///     print("Dimensions: \(config.dimensions)")
+    ///     print("HNSW M: \(config.hnswParameters.M)")
+    /// }
+    /// ```
+    public func indexConfiguration<C: IndexConfiguration>(
+        for indexName: String,
+        as type: C.Type
+    ) -> C? {
+        return indexConfigurations[indexName]?.first { $0 is C } as? C
+    }
+
+    /// Get all index configurations for the specified index
+    ///
+    /// Use this method when multiple configurations may exist for an index
+    /// (e.g., full-text index with multiple language settings).
+    ///
+    /// - Parameters:
+    ///   - indexName: Name of the index (e.g., "Article_content")
+    ///   - type: The expected configuration type
+    /// - Returns: Array of matching configurations
+    ///
+    /// **Example**:
+    /// ```swift
+    /// let configs = container.indexConfigurations(
+    ///     for: "Article_content",
+    ///     as: FullTextIndexConfiguration<Article>.self
+    /// )
+    /// for config in configs {
+    ///     print("Language: \(config.language)")
+    ///     print("Tokenizer: \(config.tokenizer)")
+    /// }
+    /// ```
+    public func indexConfigurations<C: IndexConfiguration>(
+        for indexName: String,
+        as type: C.Type
+    ) -> [C] {
+        return indexConfigurations[indexName]?.compactMap { $0 as? C } ?? []
+    }
+
+    /// Check if an index has any configurations
+    ///
+    /// - Parameter indexName: Name of the index
+    /// - Returns: true if at least one configuration exists for this index
+    public func hasIndexConfiguration(for indexName: String) -> Bool {
+        guard let configs = indexConfigurations[indexName] else {
+            return false
+        }
+        return !configs.isEmpty
+    }
+
+    /// Aggregate index configurations from multiple FDBConfiguration objects
+    ///
+    /// Groups configurations by indexName, allowing multiple configurations
+    /// for the same index (e.g., multi-language full-text search).
+    ///
+    /// - Parameter configurations: Array of FDBConfiguration objects
+    /// - Returns: Dictionary mapping indexName to array of configurations
+    internal static func aggregateIndexConfigurations(
+        from configurations: [FDBConfiguration]
+    ) -> [String: [any IndexConfiguration]] {
+        var result: [String: [any IndexConfiguration]] = [:]
+
+        for config in configurations {
+            for indexConfig in config.indexConfigurations {
+                let indexName = indexConfig.indexName
+                if result[indexName] == nil {
+                    result[indexName] = []
+                }
+                result[indexName]!.append(indexConfig)
+            }
+        }
+
+        return result
+    }
+
+    /// Aggregate index configurations from a flat array
+    ///
+    /// - Parameter indexConfigurations: Array of IndexConfiguration objects
+    /// - Returns: Dictionary mapping indexName to array of configurations
+    internal static func aggregateIndexConfigurations(
+        _ indexConfigurations: [any IndexConfiguration]
+    ) -> [String: [any IndexConfiguration]] {
+        var result: [String: [any IndexConfiguration]] = [:]
+
+        for indexConfig in indexConfigurations {
+            let indexName = indexConfig.indexName
+            if result[indexName] == nil {
+                result[indexName] = []
+            }
+            result[indexName]!.append(indexConfig)
+        }
+
+        return result
     }
 }

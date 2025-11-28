@@ -181,6 +181,108 @@ public struct DataAccess: Sendable {
         return Tuple(elements)
     }
 
+    // MARK: - KeyPath Direct Extraction (Optimized)
+
+    /// Extract field values using KeyPath direct subscript access
+    ///
+    /// This method uses direct KeyPath subscript access (`item[keyPath: kp]`)
+    /// which is more efficient than string-based `@dynamicMemberLookup`.
+    ///
+    /// **Benefits over string-based extraction**:
+    /// - Type-safe at compile time
+    /// - Direct memory access without string parsing
+    /// - Refactoring-friendly (IDE renames propagate)
+    /// - Reduced runtime overhead
+    ///
+    /// - Parameters:
+    ///   - item: The item to extract from
+    ///   - keyPath: The KeyPath to the field
+    /// - Returns: Array of tuple elements representing the extracted value
+    /// - Throws: Error if type conversion fails
+    public static func extractFieldUsingKeyPath<Item: Persistable, Value>(
+        from item: Item,
+        keyPath: KeyPath<Item, Value>
+    ) throws -> [any TupleElement] {
+        let value = item[keyPath: keyPath]
+        return try convertAnyToTupleElements(value)
+    }
+
+    /// Extract multiple field values using KeyPaths (optimized batch extraction)
+    ///
+    /// This method extracts values from multiple KeyPaths using direct subscript access.
+    /// Prefer this method when `index.keyPaths` is available.
+    ///
+    /// **Usage**:
+    /// ```swift
+    /// if let keyPaths = index.keyPaths {
+    ///     let values = try DataAccess.extractFieldsUsingKeyPaths(from: user, keyPaths: keyPaths)
+    /// } else {
+    ///     let values = try DataAccess.evaluate(item: user, expression: index.rootExpression)
+    /// }
+    /// ```
+    ///
+    /// - Parameters:
+    ///   - item: The item to extract from
+    ///   - keyPaths: Array of KeyPaths to extract
+    /// - Returns: Array of tuple elements representing all extracted values
+    /// - Throws: Error if type conversion fails
+    public static func extractFieldsUsingKeyPaths<Item: Persistable>(
+        from item: Item,
+        keyPaths: [AnyKeyPath]
+    ) throws -> [any TupleElement] {
+        var result: [any TupleElement] = []
+        for anyKeyPath in keyPaths {
+            // Try to cast to PartialKeyPath<Item> for direct access
+            if let partialKeyPath = anyKeyPath as? PartialKeyPath<Item> {
+                let value = item[keyPath: partialKeyPath]
+                let tupleElements = try convertAnyToTupleElements(value)
+                result.append(contentsOf: tupleElements)
+            } else {
+                // Fallback: This shouldn't happen if keyPaths were created correctly
+                // from the same Item type, but handle gracefully
+                throw DataAccessError.keyPathTypeMismatch(
+                    expectedType: Item.persistableType,
+                    keyPath: String(describing: anyKeyPath)
+                )
+            }
+        }
+        return result
+    }
+
+    /// Evaluate index field values with KeyPath optimization
+    ///
+    /// This method uses direct KeyPath extraction when available, falling back
+    /// to KeyExpression-based extraction for backward compatibility.
+    ///
+    /// **Recommended for IndexMaintainer implementations**:
+    /// ```swift
+    /// let fieldValues = try DataAccess.evaluateIndexFields(
+    ///     from: item,
+    ///     keyPaths: index.keyPaths,
+    ///     expression: index.rootExpression
+    /// )
+    /// ```
+    ///
+    /// - Parameters:
+    ///   - item: The item to extract from
+    ///   - keyPaths: Optional KeyPaths for direct extraction
+    ///   - expression: KeyExpression fallback for string-based extraction
+    /// - Returns: Array of tuple elements representing the extracted values
+    /// - Throws: Error if extraction fails
+    public static func evaluateIndexFields<Item: Persistable>(
+        from item: Item,
+        keyPaths: [AnyKeyPath]?,
+        expression: KeyExpression
+    ) throws -> [any TupleElement] {
+        // Use KeyPath direct extraction when available (optimized path)
+        if let keyPaths = keyPaths {
+            return try extractFieldsUsingKeyPaths(from: item, keyPaths: keyPaths)
+        }
+
+        // Fallback to KeyExpression-based extraction (backward compatibility)
+        return try evaluate(item: item, expression: expression)
+    }
+
     /// Extract Range boundary value
     ///
     /// Extracts the lowerBound or upperBound from a Range-type field.
@@ -334,6 +436,16 @@ public struct DataAccess: Sendable {
             return [bytesValue]
         case let tupleValue as Tuple:
             return [tupleValue]
+        // Vector/numeric arrays - convert each element to TupleElement
+        // IndexMaintainers handle individual Float/Double elements
+        case let floatArray as [Float]:
+            return floatArray.map { Double($0) as any TupleElement }
+        case let doubleArray as [Double]:
+            return doubleArray.map { $0 as any TupleElement }
+        case let intArray as [Int]:
+            return intArray.map { Int64($0) as any TupleElement }
+        case let int64Array as [Int64]:
+            return int64Array.map { $0 as any TupleElement }
         case let arrayValue as [any TupleElement]:
             return arrayValue
         default:
@@ -442,6 +554,12 @@ public enum DataAccessError: Error, CustomStringConvertible {
     case integerOverflow(value: UInt64, targetType: String)
     case unsupportedType(actualType: String)
 
+    /// KeyPath type mismatch during direct extraction
+    ///
+    /// This occurs when a KeyPath cannot be cast to `PartialKeyPath<Item>`,
+    /// indicating the KeyPath was created for a different type.
+    case keyPathTypeMismatch(expectedType: String, keyPath: String)
+
     public var description: String {
         switch self {
         case .fieldNotFound(let itemType, let keyPath):
@@ -460,6 +578,8 @@ public enum DataAccessError: Error, CustomStringConvertible {
             return "Integer overflow: value \(value) exceeds maximum for \(targetType) (\(Int64.max))"
         case .unsupportedType(let actualType):
             return "Unsupported type '\(actualType)' for indexing. Supported types: String, Int, Int64, UInt64 (≤ Int64.max), Double, Float, Bool, UUID, Data, [UInt8], Tuple"
+        case .keyPathTypeMismatch(let expectedType, let keyPath):
+            return "KeyPath '\(keyPath)' cannot be cast to PartialKeyPath<\(expectedType)>. Ensure the KeyPath was created for the correct type."
         }
     }
 }

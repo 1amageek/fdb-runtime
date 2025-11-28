@@ -685,6 +685,11 @@ public struct MigrationContext: Sendable {
     /// Uses `KeyExpressionFactory.from(keyPaths:)` to properly handle both
     /// simple fields and nested paths.
     ///
+    /// **KeyPath Optimization**:
+    /// Preserves original KeyPaths in Index for direct KeyPath-based field extraction.
+    /// IndexMaintainer can use `index.keyPaths` for efficient direct subscript access
+    /// instead of string-based `@dynamicMemberLookup` lookup.
+    ///
     /// - Parameters:
     ///   - descriptor: IndexDescriptor from schema
     ///   - entity: The entity containing the Persistable type for KeyPath → String conversion
@@ -697,6 +702,7 @@ public struct MigrationContext: Sendable {
         itemTypes: Set<String>
     ) throws -> Index {
         // Convert AnyKeyPaths to field name strings using the entity's Persistable type
+        // (for backward compatibility with KeyExpression-based code)
         let fieldNames = descriptor.keyPaths.map { keyPath in
             entity.persistableType.fieldName(for: keyPath)
         }
@@ -705,11 +711,13 @@ public struct MigrationContext: Sendable {
         // This properly handles nested paths (e.g., "address.city" → NestExpression)
         let keyExpression = KeyExpressionFactory.from(keyPaths: fieldNames)
 
-        // Create Index with proper itemTypes scope
+        // Create Index with both KeyExpression and original KeyPaths
+        // KeyPaths enable direct subscript access optimization in IndexMaintainer
         return Index(
             name: descriptor.name,
             kind: descriptor.kind,
             rootExpression: keyExpression,
+            keyPaths: descriptor.keyPaths,  // Preserve for direct KeyPath extraction
             subspaceKey: descriptor.name,
             itemTypes: itemTypes  // Scoped to specific entity
         )

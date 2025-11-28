@@ -16,7 +16,11 @@ import Logging
 ///
 /// **Metrics**: Operations are tracked via DataStoreDelegate (default: MetricsDataStoreDelegate).
 /// Metrics include operation counts, durations, and item counts per type.
-internal final class FDBDataStore: Sendable {
+internal final class FDBDataStore: DataStore, Sendable {
+    // MARK: - DataStore Protocol
+
+    /// Configuration type for FDBDataStore
+    typealias Configuration = FDBConfiguration
     // MARK: - Properties
 
     nonisolated(unsafe) let database: any DatabaseProtocol
@@ -32,6 +36,9 @@ internal final class FDBDataStore: Sendable {
 
     /// Indexes subspace: [subspace]/I/
     let indexSubspace: Subspace
+
+    /// Index state manager for checking index readability
+    let indexStateManager: IndexStateManager
 
     // MARK: - Initialization
 
@@ -49,6 +56,7 @@ internal final class FDBDataStore: Sendable {
         self.delegate = delegate ?? MetricsDataStoreDelegate.shared
         self.recordSubspace = subspace.subspace("R")
         self.indexSubspace = subspace.subspace("I")
+        self.indexStateManager = IndexStateManager(database: database, subspace: subspace, logger: logger)
     }
 
     // MARK: - Fetch Operations
@@ -103,18 +111,22 @@ internal final class FDBDataStore: Sendable {
         }
     }
 
-    /// Fetch models matching a descriptor
+    /// Fetch models matching a query
     ///
     /// This method attempts to use indexes for efficient queries:
     /// 1. If predicate matches an index, use index scan instead of full table scan
     /// 2. If sorting matches an index, use index ordering
     /// 3. Fall back to full table scan + in-memory filtering if no suitable index
-    func fetch<T: Persistable>(_ descriptor: FDBFetchDescriptor<T>) async throws -> [T] {
+    func fetch<T: Persistable>(_ query: Query<T>) async throws -> [T] {
         var results: [T]
 
+        // Combine predicates into single predicate for evaluation
+        let combinedPredicate: Predicate<T>? = query.predicates.isEmpty ? nil :
+            (query.predicates.count == 1 ? query.predicates[0] : .and(query.predicates))
+
         // Try index-optimized fetch
-        if let predicate = descriptor.predicate,
-           let indexResult = try await fetchUsingIndex(predicate, type: T.self, limit: descriptor.fetchLimit) {
+        if let predicate = combinedPredicate,
+           let indexResult = try await fetchUsingIndex(predicate, type: T.self, limit: query.fetchLimit) {
             results = indexResult.models
 
             // If index didn't cover all predicate conditions, apply remaining filters
@@ -128,7 +140,7 @@ internal final class FDBDataStore: Sendable {
             results = try await fetchAll(T.self)
 
             // Apply predicate filter
-            if let predicate = descriptor.predicate {
+            if let predicate = combinedPredicate {
                 results = results.filter { model in
                     evaluatePredicate(predicate, on: model)
                 }
@@ -136,10 +148,10 @@ internal final class FDBDataStore: Sendable {
         }
 
         // Apply sorting
-        if !descriptor.sortBy.isEmpty {
+        if !query.sortDescriptors.isEmpty {
             results.sort { lhs, rhs in
-                for sortDescriptor in descriptor.sortBy {
-                    let comparison = compareModels(lhs, rhs, by: sortDescriptor.keyPath)
+                for sortDescriptor in query.sortDescriptors {
+                    let comparison = compareModels(lhs, rhs, by: sortDescriptor.fieldName)
                     if comparison != .orderedSame {
                         switch sortDescriptor.order {
                         case .ascending:
@@ -154,12 +166,12 @@ internal final class FDBDataStore: Sendable {
         }
 
         // Apply offset
-        if let offset = descriptor.fetchOffset, offset > 0 {
+        if let offset = query.fetchOffset, offset > 0 {
             results = Array(results.dropFirst(offset))
         }
 
         // Apply limit
-        if let limit = descriptor.fetchLimit {
+        if let limit = query.fetchLimit {
             results = Array(results.prefix(limit))
         }
 
@@ -176,9 +188,10 @@ internal final class FDBDataStore: Sendable {
 
     /// Attempt to fetch using an index
     ///
-    /// Returns nil if no suitable index is available for the predicate.
+    /// Returns nil if no suitable index is available for the predicate,
+    /// or if the index is not in readable state.
     private func fetchUsingIndex<T: Persistable>(
-        _ predicate: FDBPredicate<T>,
+        _ predicate: Predicate<T>,
         type: T.Type,
         limit: Int?
     ) async throws -> IndexFetchResult<T>? {
@@ -188,14 +201,21 @@ internal final class FDBDataStore: Sendable {
             return nil
         }
 
+        // Check index state - only use readable indexes for queries
+        let indexState = try await indexStateManager.state(of: matchingIndex.name)
+        guard indexState.isReadable else {
+            logger.debug("Index '\(matchingIndex.name)' is not readable (state: \(indexState)), falling back to scan")
+            return nil
+        }
+
         // Build index scan range based on condition
         let indexSubspaceForIndex = indexSubspace.subspace(matchingIndex.name)
 
         var ids: [Tuple] = []
 
         try await database.withTransaction { transaction in
-            switch condition.comparison {
-            case .equals:
+            switch condition.op {
+            case .equal:
                 // Exact match: scan [indexSubspace]/[value]/*
                 let valueTuple = self.valueToTuple(condition.value)
                 let valueSubspace = indexSubspaceForIndex.subspace(valueTuple)
@@ -212,11 +232,11 @@ internal final class FDBDataStore: Sendable {
                     }
                 }
 
-            case .greaterThan, .greaterThanOrEquals:
+            case .greaterThan, .greaterThanOrEqual:
                 // Range scan from value to end
                 let valueTuple = self.valueToTuple(condition.value)
                 let beginKey: [UInt8]
-                if condition.comparison == .greaterThan {
+                if condition.op == .greaterThan {
                     // Start after the value's range
                     let valueSubspace = indexSubspaceForIndex.subspace(valueTuple)
                     beginKey = valueSubspace.range().1  // End of value range = start after
@@ -236,12 +256,12 @@ internal final class FDBDataStore: Sendable {
                     }
                 }
 
-            case .lessThan, .lessThanOrEquals:
+            case .lessThan, .lessThanOrEqual:
                 // Range scan from start to value
                 let valueTuple = self.valueToTuple(condition.value)
                 let (beginKey, _) = indexSubspaceForIndex.range()
                 let endKey: [UInt8]
-                if condition.comparison == .lessThan {
+                if condition.op == .lessThan {
                     // End before the value
                     endKey = indexSubspaceForIndex.pack(valueTuple)
                 } else {
@@ -261,7 +281,7 @@ internal final class FDBDataStore: Sendable {
                 }
 
             default:
-                // Other comparisons (contains, beginsWith, etc.) are not index-optimizable
+                // Other comparisons (contains, hasPrefix, etc.) are not index-optimizable
                 return
             }
         }
@@ -284,20 +304,20 @@ internal final class FDBDataStore: Sendable {
     /// Extract a simple indexable condition from a predicate
     private struct IndexableCondition {
         let fieldName: String
-        let comparison: FDBComparison
-        let value: any Sendable
+        let op: ComparisonOperator
+        let value: Any  // Using Any since values come from type-erased AnySendable
     }
 
     /// Extract all indexable conditions from a predicate
     ///
     /// For AND predicates, extracts all conditions that can potentially use an index.
     /// This enables compound index optimization.
-    private func extractAllIndexableConditions<T: Persistable>(from predicate: FDBPredicate<T>) -> [IndexableCondition] {
+    private func extractAllIndexableConditions<T: Persistable>(from predicate: Predicate<T>) -> [IndexableCondition] {
         switch predicate {
-        case .field(let fieldName, let comparison, let value):
-            switch comparison {
-            case .equals, .lessThan, .lessThanOrEquals, .greaterThan, .greaterThanOrEquals:
-                return [IndexableCondition(fieldName: fieldName, comparison: comparison, value: value)]
+        case .comparison(let comparison):
+            switch comparison.op {
+            case .equal, .lessThan, .lessThanOrEqual, .greaterThan, .greaterThanOrEqual:
+                return [IndexableCondition(fieldName: comparison.fieldName, op: comparison.op, value: comparison.value.value)]
             default:
                 return []
             }
@@ -317,7 +337,7 @@ internal final class FDBDataStore: Sendable {
     /// 1. Compound index matching multiple conditions (equals only)
     /// 2. Single field index with equals comparison
     /// 3. Single field index with range comparison
-    private func extractIndexableCondition<T: Persistable>(from predicate: FDBPredicate<T>) -> IndexableCondition? {
+    private func extractIndexableCondition<T: Persistable>(from predicate: Predicate<T>) -> IndexableCondition? {
         let allConditions = extractAllIndexableConditions(from: predicate)
         guard !allConditions.isEmpty else { return nil }
 
@@ -326,7 +346,7 @@ internal final class FDBDataStore: Sendable {
         for condition in allConditions {
             // Prefer equals over range for the same field
             if let existing = conditionsByField[condition.fieldName] {
-                if condition.comparison == .equals && existing.comparison != .equals {
+                if condition.op == .equal && existing.op != .equal {
                     conditionsByField[condition.fieldName] = condition
                 }
             } else {
@@ -346,7 +366,7 @@ internal final class FDBDataStore: Sendable {
             for keyPath in descriptor.keyPaths {
                 // Convert AnyKeyPath to String using Persistable's fieldName method
                 let fieldName = T.fieldName(for: keyPath as! PartialKeyPath<T>)
-                if let condition = conditionsByField[fieldName], condition.comparison == .equals {
+                if let condition = conditionsByField[fieldName], condition.op == .equal {
                     matchCount += 1
                 } else {
                     break  // Must match from the beginning
@@ -365,7 +385,7 @@ internal final class FDBDataStore: Sendable {
         }
 
         // Priority 2: Single field with equals
-        for condition in allConditions where condition.comparison == .equals {
+        for condition in allConditions where condition.op == .equal {
             if findMatchingIndex(for: condition, in: descriptors, type: T.self) != nil {
                 return condition
             }
@@ -401,7 +421,7 @@ internal final class FDBDataStore: Sendable {
     }
 
     /// Convert a value to a Tuple for index key construction
-    private func valueToTuple(_ value: any Sendable) -> Tuple {
+    private func valueToTuple(_ value: Any) -> Tuple {
         if let tupleElement = value as? any TupleElement {
             return Tuple([tupleElement])
         }
@@ -479,36 +499,40 @@ internal final class FDBDataStore: Sendable {
     }
 
     /// Check if predicate is a simple field comparison (no AND/OR/NOT)
-    private func isSimpleFieldPredicate<T: Persistable>(_ predicate: FDBPredicate<T>, fieldName: String) -> Bool {
+    private func isSimpleFieldPredicate<T: Persistable>(_ predicate: Predicate<T>, fieldName: String) -> Bool {
         switch predicate {
-        case .field(let name, _, _):
-            return name == fieldName
+        case .comparison(let comparison):
+            return comparison.fieldName == fieldName
         default:
             return false
         }
     }
 
-    /// Fetch count of models matching a descriptor
+    /// Fetch count of models matching a query
     ///
     /// This method attempts to use indexes for efficient counting:
     /// 1. If no predicate, count all records without deserialization
     /// 2. If predicate matches an index, count using index scan
     /// 3. Fall back to fetch and count if no optimization possible
-    func fetchCount<T: Persistable>(_ descriptor: FDBFetchDescriptor<T>) async throws -> Int {
+    func fetchCount<T: Persistable>(_ query: Query<T>) async throws -> Int {
+        // Combine predicates into single predicate for evaluation
+        let combinedPredicate: Predicate<T>? = query.predicates.isEmpty ? nil :
+            (query.predicates.count == 1 ? query.predicates[0] : .and(query.predicates))
+
         // For count, we can optimize by not deserializing if no predicate
-        if descriptor.predicate == nil {
+        if combinedPredicate == nil {
             return try await countAll(T.self)
         }
 
         // Try to use index for counting
-        if let predicate = descriptor.predicate,
+        if let predicate = combinedPredicate,
            let condition = extractIndexableCondition(from: predicate),
            let matchingIndex = findMatchingIndex(for: condition, in: T.indexDescriptors, type: T.self) {
             return try await countUsingIndex(condition: condition, index: matchingIndex)
         }
 
         // Otherwise, fetch and count
-        let results = try await fetch(descriptor)
+        let results = try await fetch(query)
         return results.count
     }
 
@@ -520,8 +544,8 @@ internal final class FDBDataStore: Sendable {
         try await database.withTransaction { transaction in
             let (beginKey, endKey): ([UInt8], [UInt8])
 
-            switch condition.comparison {
-            case .equals:
+            switch condition.op {
+            case .equal:
                 // Exact match: count [indexSubspace]/[value]/*
                 let valueTuple = self.valueToTuple(condition.value)
                 let valueSubspace = indexSubspaceForIndex.subspace(valueTuple)
@@ -533,7 +557,7 @@ internal final class FDBDataStore: Sendable {
                 beginKey = valueSubspace.range().1  // Start after value range
                 endKey = indexSubspaceForIndex.range().1
 
-            case .greaterThanOrEquals:
+            case .greaterThanOrEqual:
                 let valueTuple = self.valueToTuple(condition.value)
                 beginKey = indexSubspaceForIndex.pack(valueTuple)
                 endKey = indexSubspaceForIndex.range().1
@@ -543,7 +567,7 @@ internal final class FDBDataStore: Sendable {
                 beginKey = indexSubspaceForIndex.range().0
                 endKey = indexSubspaceForIndex.pack(valueTuple)
 
-            case .lessThanOrEquals:
+            case .lessThanOrEqual:
                 let valueTuple = self.valueToTuple(condition.value)
                 let valueSubspace = indexSubspaceForIndex.subspace(valueTuple)
                 beginKey = indexSubspaceForIndex.range().0
@@ -992,7 +1016,13 @@ internal final class FDBDataStore: Sendable {
     /// Update sum index (SumIndexKind)
     ///
     /// Key structure: `[indexSubspace][groupKey] = Double(sum)`
-    /// Uses atomic add operations. Last keyPath is the value field.
+    /// Uses read-modify-write pattern. Last keyPath is the value field.
+    ///
+    /// **Note**: FDB's atomic `.add` only supports 64-bit signed integer addition.
+    /// Using `Double.bitPattern` with `.add` is incorrect because IEEE 754 bit patterns
+    /// don't produce correct sums when added as integers.
+    /// We use read-modify-write instead, which is correct but not atomic across transactions.
+    /// Conflicts are handled by FDB's optimistic concurrency control and automatic retry.
     private func updateSumIndex<T: Persistable>(
         descriptor: IndexDescriptor,
         subspace: Subspace,
@@ -1005,35 +1035,49 @@ internal final class FDBDataStore: Sendable {
         let groupKeyPaths = Array(descriptor.keyPaths.dropLast())
         let valueKeyPath = descriptor.keyPaths.last!
 
-        // Subtract old value from group
+        // Calculate delta: newValue - oldValue
+        var oldNumeric: Double = 0.0
+        var newNumeric: Double = 0.0
+        var groupKey: [UInt8]?
+
         if let old = oldModel {
             let groupValues = extractIndexValues(from: old, keyPaths: groupKeyPaths)
             let valueValues = extractIndexValues(from: old, keyPaths: [valueKeyPath])
 
             if !groupValues.isEmpty, let oldValue = valueValues.first {
-                let key = subspace.pack(Tuple(groupValues))
-                if let numericValue = toDouble(oldValue) {
-                    // Atomic subtract (add negative)
-                    let subtractValue = withUnsafeBytes(of: (-numericValue).bitPattern.littleEndian) { Array($0) }
-                    transaction.atomicOp(key: key, param: subtractValue, mutationType: .add)
-                }
+                groupKey = subspace.pack(Tuple(groupValues))
+                oldNumeric = toDouble(oldValue) ?? 0.0
             }
         }
 
-        // Add new value to group
         if let new = newModel {
             let groupValues = extractIndexValues(from: new, keyPaths: groupKeyPaths)
             let valueValues = extractIndexValues(from: new, keyPaths: [valueKeyPath])
 
             if !groupValues.isEmpty, let newValue = valueValues.first {
-                let key = subspace.pack(Tuple(groupValues))
-                if let numericValue = toDouble(newValue) {
-                    // Atomic add
-                    let addValue = withUnsafeBytes(of: numericValue.bitPattern.littleEndian) { Array($0) }
-                    transaction.atomicOp(key: key, param: addValue, mutationType: .add)
-                }
+                groupKey = subspace.pack(Tuple(groupValues))
+                newNumeric = toDouble(newValue) ?? 0.0
             }
         }
+
+        // Apply delta using read-modify-write
+        guard let key = groupKey else { return }
+
+        let delta = newNumeric - oldNumeric
+        if delta == 0.0 { return }
+
+        // Read current sum
+        let currentBytes = try await transaction.getValue(for: key, snapshot: false)
+        var currentSum: Double = 0.0
+        if let bytes = currentBytes, bytes.count == 8 {
+            let bitPattern = bytes.withUnsafeBytes { $0.load(as: UInt64.self) }
+            currentSum = Double(bitPattern: UInt64(littleEndian: bitPattern))
+        }
+
+        // Write new sum
+        let newSum = currentSum + delta
+        let newSumBytes = withUnsafeBytes(of: newSum.bitPattern.littleEndian) { Array($0) }
+        transaction.setValue(newSumBytes, for: key)
     }
 
     /// Convert TupleElement to Double for sum operations
@@ -1104,8 +1148,12 @@ internal final class FDBDataStore: Sendable {
     /// Update indexes for type-erased models (batch operations)
     ///
     /// For Protobuf-serialized data, we use a "clear and re-add" strategy for updates
-    /// since Protobuf is not self-describing. This clears existing index entries for
-    /// this model's ID before adding new ones.
+    /// since Protobuf is not self-describing. This scans for existing index entries
+    /// with this ID and clears them before adding new ones.
+    ///
+    /// **Important**: This path now includes:
+    /// - Unique constraint checking (prevents duplicates)
+    /// - Proper cleanup of old index entries on update
     ///
     /// - Parameters:
     ///   - oldData: The old record data (for update operations), nil for insert
@@ -1135,13 +1183,14 @@ internal final class FDBDataStore: Sendable {
         for descriptor in indexDescriptors {
             let indexSubspaceForIndex = indexSubspace.subspace(descriptor.name)
 
-            // For update operations (oldData exists), clear any existing index entries for this ID
-            // We do this because Protobuf is not self-describing, so we can't easily extract
-            // old values without deserializing with the concrete type
+            // For update operations (oldData exists), clear existing index entries for this ID
+            // Since Protobuf is not self-describing, we scan the index to find entries with this ID
             if oldData != nil {
-                // Clear index range for this ID - scan and clear entries ending with this ID
-                // This is a simplified approach; for better performance, we'd need the concrete type
-                // For now, we rely on the fact that new entries will be added below
+                try await clearIndexEntriesForId(
+                    indexSubspace: indexSubspaceForIndex,
+                    id: id,
+                    transaction: transaction
+                )
             }
 
             // For delete operations, extract values from the model being deleted
@@ -1161,6 +1210,17 @@ internal final class FDBDataStore: Sendable {
             if let newModel = newModel {
                 let newValues = extractIndexValuesUntyped(from: newModel, keyPaths: descriptor.keyPaths)
                 if !newValues.isEmpty {
+                    // Check unique constraint before adding
+                    if descriptor.isUnique {
+                        try await checkUniqueConstraint(
+                            descriptor: descriptor,
+                            subspace: indexSubspaceForIndex,
+                            values: newValues,
+                            excludingId: id,
+                            transaction: transaction
+                        )
+                    }
+
                     let newIndexKey = buildIndexKey(
                         subspace: indexSubspaceForIndex,
                         values: newValues,
@@ -1172,31 +1232,50 @@ internal final class FDBDataStore: Sendable {
         }
     }
 
-    /// Extract index values from a type-erased model
-    private func extractIndexValuesUntyped(from model: any Persistable, keyPaths: [AnyKeyPath]) -> [any TupleElement] {
-        let modelType = type(of: model)
-        var values: [any TupleElement] = []
-        for keyPath in keyPaths {
-            // Convert AnyKeyPath to field name string using the model's static method
-            let fieldName = modelType.fieldName(for: keyPath)
-            if let extractedValues = try? DataAccess.extractField(from: model, keyPath: fieldName) {
-                values.append(contentsOf: extractedValues)
+    /// Clear all index entries for a given ID by scanning the index
+    ///
+    /// This is used in the type-erased path where we can't deserialize the old values.
+    /// We scan the index subspace and clear any entries that end with the given ID.
+    ///
+    /// **Performance note**: This is O(n) where n is the number of index entries.
+    /// For better performance, use the typed path which can extract old values directly.
+    ///
+    /// - Parameters:
+    ///   - indexSubspace: The subspace for this specific index
+    ///   - id: The model's ID tuple to match
+    ///   - transaction: The FDB transaction
+    private func clearIndexEntriesForId(
+        indexSubspace: Subspace,
+        id: Tuple,
+        transaction: any TransactionProtocol
+    ) async throws {
+        let (begin, end) = indexSubspace.range()
+        let sequence = transaction.getRange(begin: begin, end: end, snapshot: false)
+
+        for try await (key, _) in sequence {
+            // Check if this key ends with the given ID
+            if let extractedId = extractIDFromIndexKey(key, subspace: indexSubspace),
+               extractedId.pack() == id.pack() {
+                transaction.clear(key: key)
             }
         }
-        return values
+    }
+
+    /// Extract index values from a type-erased model
+    ///
+    /// Uses KeyPath direct extraction for optimal performance.
+    /// Swift 5.7+ implicit existential opening allows passing `any Persistable`
+    /// directly to generic functions.
+    private func extractIndexValuesUntyped(from model: any Persistable, keyPaths: [AnyKeyPath]) -> [any TupleElement] {
+        (try? DataAccess.extractFieldsUsingKeyPaths(from: model, keyPaths: keyPaths)) ?? []
     }
 
     /// Extract index values from a model
+    ///
+    /// Uses KeyPath direct extraction for optimal performance.
+    /// Avoids string-based field lookup and Mirror reflection.
     private func extractIndexValues<T: Persistable>(from model: T, keyPaths: [AnyKeyPath]) -> [any TupleElement] {
-        var values: [any TupleElement] = []
-        for keyPath in keyPaths {
-            // Convert AnyKeyPath to field name string using Persistable's fieldName method
-            let fieldName = T.fieldName(for: keyPath as! PartialKeyPath<T>)
-            if let extractedValues = try? DataAccess.extractField(from: model, keyPath: fieldName) {
-                values.append(contentsOf: extractedValues)
-            }
-        }
-        return values
+        (try? DataAccess.extractFieldsUsingKeyPaths(from: model, keyPaths: keyPaths)) ?? []
     }
 
     /// Build index key
@@ -1213,10 +1292,10 @@ internal final class FDBDataStore: Sendable {
     // MARK: - Predicate Evaluation
 
     /// Evaluate a predicate on a model
-    private func evaluatePredicate<T: Persistable>(_ predicate: FDBPredicate<T>, on model: T) -> Bool {
+    private func evaluatePredicate<T: Persistable>(_ predicate: Predicate<T>, on model: T) -> Bool {
         switch predicate {
-        case .field(let fieldName, let comparison, let value):
-            return evaluateFieldComparison(model: model, fieldName: fieldName, comparison: comparison, value: value)
+        case .comparison(let comparison):
+            return evaluateFieldComparison(model: model, comparison: comparison)
 
         case .and(let predicates):
             return predicates.allSatisfy { evaluatePredicate($0, on: model) }
@@ -1238,39 +1317,52 @@ internal final class FDBDataStore: Sendable {
     /// Evaluate a field comparison with type-safe comparisons
     private func evaluateFieldComparison<T: Persistable>(
         model: T,
-        fieldName: String,
-        comparison: FDBComparison,
-        value: any Sendable
+        comparison: FieldComparison<T>
     ) -> Bool {
+        let fieldName = comparison.fieldName
+        let value = comparison.value.value
+
+        // Handle nil checks separately
+        switch comparison.op {
+        case .isNil:
+            let fieldValues = try? DataAccess.extractField(from: model, keyPath: fieldName)
+            return fieldValues == nil || fieldValues?.isEmpty == true
+        case .isNotNil:
+            let fieldValues = try? DataAccess.extractField(from: model, keyPath: fieldName)
+            return fieldValues != nil && fieldValues?.isEmpty == false
+        default:
+            break
+        }
+
         guard let fieldValues = try? DataAccess.extractField(from: model, keyPath: fieldName),
               let fieldValue = fieldValues.first else {
             return false
         }
 
-        switch comparison {
-        case .equals:
+        switch comparison.op {
+        case .equal:
             return compareValues(fieldValue, value) == .orderedSame
-        case .notEquals:
+        case .notEqual:
             return compareValues(fieldValue, value) != .orderedSame
         case .lessThan:
             return compareValues(fieldValue, value) == .orderedAscending
-        case .lessThanOrEquals:
+        case .lessThanOrEqual:
             let result = compareValues(fieldValue, value)
             return result == .orderedAscending || result == .orderedSame
         case .greaterThan:
             return compareValues(fieldValue, value) == .orderedDescending
-        case .greaterThanOrEquals:
+        case .greaterThanOrEqual:
             let result = compareValues(fieldValue, value)
             return result == .orderedDescending || result == .orderedSame
         case .contains:
             let fieldString = String(describing: fieldValue)
             let valueString = String(describing: value)
             return fieldString.contains(valueString)
-        case .beginsWith:
+        case .hasPrefix:
             let fieldString = String(describing: fieldValue)
             let valueString = String(describing: value)
             return fieldString.hasPrefix(valueString)
-        case .endsWith:
+        case .hasSuffix:
             let fieldString = String(describing: fieldValue)
             let valueString = String(describing: value)
             return fieldString.hasSuffix(valueString)
@@ -1279,6 +1371,9 @@ internal final class FDBDataStore: Sendable {
             if let array = value as? [any Sendable] {
                 return array.contains { compareValues(fieldValue, $0) == .orderedSame }
             }
+            return false
+        case .isNil, .isNotNil:
+            // Already handled above
             return false
         }
     }
@@ -1300,7 +1395,7 @@ internal final class FDBDataStore: Sendable {
     ///
     /// Compares values with proper numeric/date ordering instead of string comparison.
     /// Falls back to string comparison for non-comparable types.
-    private func compareValues(_ lhs: any Sendable, _ rhs: any Sendable) -> ComparisonResult {
+    private func compareValues(_ lhs: Any, _ rhs: Any) -> ComparisonResult {
         // Try numeric comparison first
         if let result = compareNumericValues(lhs, rhs) {
             return result
@@ -1344,7 +1439,7 @@ internal final class FDBDataStore: Sendable {
     }
 
     /// Compare numeric values with type coercion
-    private func compareNumericValues(_ lhs: any Sendable, _ rhs: any Sendable) -> ComparisonResult? {
+    private func compareNumericValues(_ lhs: Any, _ rhs: Any) -> ComparisonResult? {
         // Convert both values to Double for comparison if they're numeric
         let lhsDouble: Double?
         let rhsDouble: Double?
