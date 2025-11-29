@@ -47,7 +47,7 @@ import Foundation
 /// - If user defines `id` field: uses that type and default value
 /// - If user omits `id` field: macro adds `var id: String = ULID().ulidString`
 /// - `id` is NOT included in the generated initializer
-@attached(member, names: named(id), named(persistableType), named(allFields), named(indexDescriptors), named(fieldNumber), named(enumMetadata), named(subscript), named(init), named(fieldName))
+@attached(member, names: named(id), named(persistableType), named(allFields), named(indexDescriptors), named(fieldNumber), named(enumMetadata), named(subscript), named(init), named(fieldName), named(CodingKeys))
 @attached(extension, conformances: Persistable, Codable, Sendable)
 public macro Persistable() = #externalMacro(module: "FDBModelMacros", type: "PersistableMacro")
 
@@ -61,7 +61,7 @@ public macro Persistable() = #externalMacro(module: "FDBModelMacros", type: "Per
 /// }
 /// // persistableType = "User"
 /// ```
-@attached(member, names: named(id), named(persistableType), named(allFields), named(indexDescriptors), named(fieldNumber), named(enumMetadata), named(subscript), named(init), named(fieldName))
+@attached(member, names: named(id), named(persistableType), named(allFields), named(indexDescriptors), named(fieldNumber), named(enumMetadata), named(subscript), named(init), named(fieldName), named(CodingKeys))
 @attached(extension, conformances: Persistable, Codable, Sendable)
 public macro Persistable(type: String) = #externalMacro(module: "FDBModelMacros", type: "PersistableMacro")
 
@@ -160,3 +160,36 @@ public struct Field<T, V> {
         self.keyPath = keyPath
     }
 }
+
+// MARK: - @Transient Macro
+
+/// @Transient macro declaration
+///
+/// Marks a property as transient (excluded from persistence and allFields).
+///
+/// **Usage**:
+/// ```swift
+/// @Persistable
+/// struct User {
+///     var id: String = ULID().ulidString
+///     var email: String
+///     var name: String
+///
+///     @Transient
+///     var cachedFullName: String?  // Not persisted to database
+///
+///     @Transient
+///     var isOnline: Bool = false   // Runtime-only state
+/// }
+/// ```
+///
+/// **Effects**:
+/// - Field is excluded from `allFields` array
+/// - Field is excluded from Codable serialization
+/// - Field is excluded from generated initializer
+/// - Field is excluded from `subscript(dynamicMember:)`
+///
+/// **Requirements**:
+/// - Field must have a default value (since it's excluded from initializer)
+@attached(peer)
+public macro Transient() = #externalMacro(module: "FDBModelMacros", type: "TransientMacro")

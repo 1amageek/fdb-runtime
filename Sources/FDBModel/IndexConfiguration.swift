@@ -71,6 +71,12 @@ public protocol IndexConfiguration: Sendable {
     ///
     /// Used for generating index name: `{modelTypeName}_{fieldName}`
     var modelTypeName: String { get }
+
+    /// Computed index name
+    ///
+    /// Format: `{modelTypeName}_{fieldName}`
+    /// Default implementation extracts fieldName from keyPath.
+    var indexName: String { get }
 }
 
 // MARK: - Default Implementation

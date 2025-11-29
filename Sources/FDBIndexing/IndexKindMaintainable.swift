@@ -56,9 +56,20 @@ import FDBCore
 ///     public func makeIndexMaintainer<Item: Persistable>(
 ///         index: Index,
 ///         subspace: Subspace,
-///         idExpression: KeyExpression
+///         idExpression: KeyExpression,
+///         configurations: [any IndexConfiguration]
 ///     ) -> any IndexMaintainer<Item> {
-///         return HNSWIndexMaintainer<Item>(index: index, subspace: subspace, ...)
+///         // Find matching configuration for this index
+///         let config = configurations.first { $0.indexName == index.name }
+///         if let vectorConfig = config as? VectorIndexConfiguration<Item> {
+///             return HNSWIndexMaintainer<Item>(
+///                 index: index,
+///                 subspace: subspace,
+///                 parameters: vectorConfig.hnswParameters
+///             )
+///         }
+///         // Default to flat index if no config
+///         return FlatVectorIndexMaintainer<Item>(index: index, subspace: subspace)
 ///     }
 /// }
 /// ```
@@ -72,10 +83,12 @@ public protocol IndexKindMaintainable: IndexKind {
     ///   - index: Index definition (name, rootExpression, etc.)
     ///   - subspace: FDB subspace for storing index data
     ///   - idExpression: KeyExpression for extracting item's unique identifier
+    ///   - configurations: Index configurations from FDBContainer (may contain runtime parameters)
     /// - Returns: IndexMaintainer instance for maintaining this index
     func makeIndexMaintainer<Item: Persistable>(
         index: Index,
         subspace: Subspace,
-        idExpression: KeyExpression
+        idExpression: KeyExpression,
+        configurations: [any IndexConfiguration]
     ) -> any IndexMaintainer<Item>
 }

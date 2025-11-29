@@ -14,7 +14,6 @@ import FDBModel
 /// ```swift
 /// let schema = Schema([User.self, Order.self, Document.self])
 /// let config = FDBConfiguration(
-///     schema: schema,
 ///     url: URL(filePath: "/etc/foundationdb/fdb.cluster"),
 ///     indexConfigurations: [
 ///         VectorIndexConfiguration<Document>(
@@ -24,7 +23,7 @@ import FDBModel
 ///         )
 ///     ]
 /// )
-/// let container = try FDBContainer(for: schema, configurations: [config])
+/// let container = try FDBContainer(for: schema, configuration: config)
 /// ```
 public struct FDBConfiguration: DataStoreConfiguration, Sendable {
 
@@ -33,9 +32,10 @@ public struct FDBConfiguration: DataStoreConfiguration, Sendable {
     /// Configuration name (optional, for debugging)
     public let name: String?
 
-    /// Schema for this configuration
+    /// Schema for this configuration (optional)
     ///
-    /// If nil, this configuration applies to all models not covered by other configurations.
+    /// If specified, used for validation that configuration's schema is a subset of the container's schema.
+    /// If nil, the container's schema is used directly.
     public let schema: Schema?
 
     /// FoundationDB API version (optional)

@@ -83,13 +83,21 @@ public struct PersistableMacro: MemberMacro, ExtensionMacro {
 
         // Extract all stored properties (fields)
         var allFields: [String] = []
-        var fieldInfos: [(name: String, type: String, hasDefault: Bool, defaultValue: String?)] = []
+        var fieldInfos: [(name: String, type: String, hasDefault: Bool, defaultValue: String?, isTransient: Bool)] = []
         var fieldNumber = 1
 
         for member in structDecl.memberBlock.members {
             if let varDecl = member.decl.as(VariableDeclSyntax.self) {
                 let isVar = varDecl.bindingSpecifier.text == "var"
                 let isLet = varDecl.bindingSpecifier.text == "let"
+
+                // Check if field has @Transient attribute
+                let isTransient = varDecl.attributes.contains { attr in
+                    if case .attribute(let attrSyntax) = attr {
+                        return attrSyntax.attributeName.description.trimmingCharacters(in: .whitespaces) == "Transient"
+                    }
+                    return false
+                }
 
                 if isVar || isLet {
                     for binding in varDecl.bindings {
@@ -105,8 +113,11 @@ public struct PersistableMacro: MemberMacro, ExtensionMacro {
                                 userIdBinding = binding
                             }
 
-                            allFields.append(fieldName)
-                            fieldInfos.append((name: fieldName, type: fieldType, hasDefault: hasDefault, defaultValue: defaultValue))
+                            // Only add non-transient fields to allFields
+                            if !isTransient {
+                                allFields.append(fieldName)
+                            }
+                            fieldInfos.append((name: fieldName, type: fieldType, hasDefault: hasDefault, defaultValue: defaultValue, isTransient: isTransient))
                             fieldNumber += 1
                         }
                     }
@@ -230,7 +241,7 @@ public struct PersistableMacro: MemberMacro, ExtensionMacro {
 
             // Add id to allFields at the beginning
             allFields.insert("id", at: 0)
-            fieldInfos.insert((name: "id", type: "String", hasDefault: true, defaultValue: "ULID().ulidString"), at: 0)
+            fieldInfos.insert((name: "id", type: "String", hasDefault: true, defaultValue: "ULID().ulidString", isTransient: false), at: 0)
         }
 
         // Generate persistableType property
@@ -255,10 +266,14 @@ public struct PersistableMacro: MemberMacro, ExtensionMacro {
             """
         decls.append(indexDescriptorsDecl)
 
-        // Generate fieldNumber method
+        // Generate fieldNumber method (excludes transient fields)
         var fieldNumberCases: [String] = []
-        for (index, fieldInfo) in fieldInfos.enumerated() {
-            fieldNumberCases.append("case \"\(fieldInfo.name)\": return \(index + 1)")
+        var persistedFieldIndex = 0
+        for fieldInfo in fieldInfos {
+            if !fieldInfo.isTransient {
+                persistedFieldIndex += 1
+                fieldNumberCases.append("case \"\(fieldInfo.name)\": return \(persistedFieldIndex)")
+            }
         }
         let fieldNumberBody = fieldNumberCases.isEmpty
             ? "return nil"
@@ -283,10 +298,12 @@ public struct PersistableMacro: MemberMacro, ExtensionMacro {
             """
         decls.append(enumMetadataDecl)
 
-        // Generate subscript for @dynamicMemberLookup
+        // Generate subscript for @dynamicMemberLookup (excludes transient fields)
         var subscriptCases: [String] = []
         for fieldInfo in fieldInfos {
-            subscriptCases.append("case \"\(fieldInfo.name)\": return self.\(fieldInfo.name)")
+            if !fieldInfo.isTransient {
+                subscriptCases.append("case \"\(fieldInfo.name)\": return self.\(fieldInfo.name)")
+            }
         }
         let subscriptBody = subscriptCases.isEmpty
             ? "return nil"
@@ -305,11 +322,14 @@ public struct PersistableMacro: MemberMacro, ExtensionMacro {
 
         // Generate fieldName(for:) methods for KeyPath → String conversion
         // Include top-level fields and all indexed keyPaths (including nested)
+        // Excludes transient fields
         var fieldNameCases: [String] = []
 
-        // Add top-level fields
+        // Add top-level fields (excludes transient)
         for fieldInfo in fieldInfos {
-            fieldNameCases.append("if keyPath == \\\(structName).\(fieldInfo.name) { return \"\(fieldInfo.name)\" }")
+            if !fieldInfo.isTransient {
+                fieldNameCases.append("if keyPath == \\\(structName).\(fieldInfo.name) { return \"\(fieldInfo.name)\" }")
+            }
         }
 
         // Add nested keyPaths from #Index declarations
@@ -349,10 +369,10 @@ public struct PersistableMacro: MemberMacro, ExtensionMacro {
             """
         decls.append(anyFieldNameDecl)
 
-        // Generate init without `id` parameter
-        // Only include fields that are NOT `id`
+        // Generate init without `id` parameter and transient fields
+        // Only include fields that are NOT `id` and NOT @Transient
         let initParams = fieldInfos
-            .filter { $0.name != "id" }
+            .filter { $0.name != "id" && !$0.isTransient }
             .map { info -> String in
                 if info.hasDefault, let defaultValue = info.defaultValue {
                     return "\(info.name): \(info.type) = \(defaultValue)"
@@ -363,7 +383,7 @@ public struct PersistableMacro: MemberMacro, ExtensionMacro {
             .joined(separator: ", ")
 
         let initAssignments = fieldInfos
-            .filter { $0.name != "id" }
+            .filter { $0.name != "id" && !$0.isTransient }
             .map { "self.\($0.name) = \($0.name)" }
             .joined(separator: "\n        ")
 
@@ -380,6 +400,23 @@ public struct PersistableMacro: MemberMacro, ExtensionMacro {
                 public init() {}
                 """
             decls.append(initDecl)
+        }
+
+        // Generate CodingKeys enum if there are @Transient fields
+        // This excludes transient fields from Codable serialization
+        let hasTransientFields = fieldInfos.contains { $0.isTransient }
+        if hasTransientFields {
+            let codingKeyCases = fieldInfos
+                .filter { !$0.isTransient }
+                .map { "case \($0.name)" }
+                .joined(separator: "\n            ")
+
+            let codingKeysDecl: DeclSyntax = """
+                private enum CodingKeys: String, CodingKey {
+                    \(raw: codingKeyCases)
+                }
+                """
+            decls.append(codingKeysDecl)
         }
 
         return decls
@@ -455,6 +492,65 @@ public struct IndexMacro: DeclarationMacro {
     }
 }
 
+/// @Transient macro implementation
+///
+/// Marker macro that excludes a property from persistence.
+/// The actual exclusion logic is in @Persistable macro which detects @Transient.
+///
+/// **Usage**:
+/// ```swift
+/// @Persistable
+/// struct User {
+///     var email: String
+///
+///     @Transient
+///     var cachedData: Data?  // Excluded from persistence
+/// }
+/// ```
+public struct TransientMacro: PeerMacro {
+    public static func expansion(
+        of node: AttributeSyntax,
+        providingPeersOf declaration: some DeclSyntaxProtocol,
+        in context: some MacroExpansionContext
+    ) throws -> [DeclSyntax] {
+        // Validate that @Transient is applied to a variable declaration
+        guard let varDecl = declaration.as(VariableDeclSyntax.self) else {
+            throw DiagnosticsError(diagnostics: [
+                Diagnostic(
+                    node: Syntax(node),
+                    message: MacroExpansionErrorMessage("@Transient can only be applied to properties")
+                )
+            ])
+        }
+
+        // Validate that the property has a default value
+        for binding in varDecl.bindings {
+            if binding.initializer == nil {
+                // Check if it's an optional type (which implicitly has nil default)
+                if let typeAnnotation = binding.typeAnnotation,
+                   typeAnnotation.type.is(OptionalTypeSyntax.self) ||
+                   typeAnnotation.type.is(ImplicitlyUnwrappedOptionalTypeSyntax.self) {
+                    // Optional types are OK without explicit initializer
+                    continue
+                }
+
+                throw DiagnosticsError(diagnostics: [
+                    Diagnostic(
+                        node: Syntax(binding),
+                        message: MacroExpansionErrorMessage(
+                            "@Transient property must have a default value. " +
+                            "It is excluded from the generated initializer."
+                        )
+                    )
+                ])
+            }
+        }
+
+        // Marker macro - no code generation
+        return []
+    }
+}
+
 /// Compiler plugin entry point
 @main
 struct FDBModelMacrosPlugin: CompilerPlugin {
@@ -462,6 +558,7 @@ struct FDBModelMacrosPlugin: CompilerPlugin {
         PersistableMacro.self,
         IndexMacro.self,
         DirectoryMacro.self,
+        TransientMacro.self,
     ]
 }
 

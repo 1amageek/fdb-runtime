@@ -163,6 +163,116 @@ struct ModelMacroTests {
         #expect(user[dynamicMember: "name"] as? String == "Alice")
         #expect(user[dynamicMember: "nonexistent"] == nil)
     }
+
+    // MARK: - @Transient Tests
+
+    /// Test @Transient excludes fields from allFields
+    @Test("@Transient excludes fields from allFields")
+    func transientExcludesFromAllFields() {
+        // allFields should include: id, email, name
+        // allFields should NOT include: cachedDisplayName, sessionToken, isOnline
+        #expect(TransientUser.allFields.contains("id"))
+        #expect(TransientUser.allFields.contains("email"))
+        #expect(TransientUser.allFields.contains("name"))
+        #expect(!TransientUser.allFields.contains("cachedDisplayName"))
+        #expect(!TransientUser.allFields.contains("sessionToken"))
+        #expect(!TransientUser.allFields.contains("isOnline"))
+        #expect(TransientUser.allFields.count == 3)
+    }
+
+    /// Test @Transient excludes fields from subscript
+    @Test("@Transient excludes fields from subscript")
+    func transientExcludesFromSubscript() {
+        let user = TransientUser(email: "test@example.com", name: "Alice")
+
+        // Persisted fields should be accessible
+        #expect(user[dynamicMember: "email"] as? String == "test@example.com")
+        #expect(user[dynamicMember: "name"] as? String == "Alice")
+
+        // Transient fields should return nil via subscript
+        #expect(user[dynamicMember: "cachedDisplayName"] == nil)
+        #expect(user[dynamicMember: "sessionToken"] == nil)
+        #expect(user[dynamicMember: "isOnline"] == nil)
+    }
+
+    /// Test @Transient fields are not in init
+    @Test("@Transient fields are excluded from init")
+    func transientExcludesFromInit() {
+        // This should compile - init only has email and name parameters
+        let user = TransientUser(email: "test@example.com", name: "Alice")
+        #expect(user.email == "test@example.com")
+        #expect(user.name == "Alice")
+
+        // Transient fields use their default values
+        #expect(user.cachedDisplayName == nil)
+        #expect(user.sessionToken == "")
+        #expect(user.isOnline == false)
+    }
+
+    /// Test @Transient fields can still be accessed directly
+    @Test("@Transient fields are accessible directly")
+    func transientFieldsAccessible() {
+        var user = TransientUser(email: "test@example.com", name: "Alice")
+
+        // Can modify transient fields directly
+        user.cachedDisplayName = "Alice <test@example.com>"
+        user.sessionToken = "abc123"
+        user.isOnline = true
+
+        #expect(user.cachedDisplayName == "Alice <test@example.com>")
+        #expect(user.sessionToken == "abc123")
+        #expect(user.isOnline == true)
+    }
+
+    /// Test @Transient excludes fields from fieldNumber
+    @Test("@Transient excludes fields from fieldNumber")
+    func transientExcludesFromFieldNumber() {
+        // Persisted fields have field numbers
+        #expect(TransientUser.fieldNumber(for: "id") == 1)
+        #expect(TransientUser.fieldNumber(for: "email") == 2)
+        #expect(TransientUser.fieldNumber(for: "name") == 3)
+
+        // Transient fields have no field number
+        #expect(TransientUser.fieldNumber(for: "cachedDisplayName") == nil)
+        #expect(TransientUser.fieldNumber(for: "sessionToken") == nil)
+        #expect(TransientUser.fieldNumber(for: "isOnline") == nil)
+    }
+
+    /// Test @Transient with Codable serialization
+    @Test("@Transient excludes fields from Codable")
+    func transientExcludesFromCodable() throws {
+        var user = TransientUser(email: "test@example.com", name: "Alice")
+        user.cachedDisplayName = "Should not be encoded"
+        user.sessionToken = "secret-token"
+        user.isOnline = true
+
+        // Encode
+        let encoder = JSONEncoder()
+        let data = try encoder.encode(user)
+        let json = String(data: data, encoding: .utf8)!
+
+        // Transient fields should not be in JSON
+        #expect(!json.contains("cachedDisplayName"))
+        #expect(!json.contains("sessionToken"))
+        #expect(!json.contains("isOnline"))
+
+        // Persisted fields should be in JSON
+        #expect(json.contains("email"))
+        #expect(json.contains("name"))
+
+        // Decode
+        let decoder = JSONDecoder()
+        let decoded = try decoder.decode(TransientUser.self, from: data)
+
+        // Persisted fields are restored
+        #expect(decoded.email == "test@example.com")
+        #expect(decoded.name == "Alice")
+
+        // Transient fields have default values (not the encoded values)
+        #expect(decoded.cachedDisplayName == nil)
+        #expect(decoded.sessionToken == "")
+        #expect(decoded.isOnline == false)
+    }
 }
 
 // MARK: - Test Structs (File Scope)
@@ -235,4 +345,21 @@ struct CodableUser {
 @Persistable
 struct SendableUser {
     var email: String
+}
+
+// MARK: - @Transient Tests
+
+@Persistable
+struct TransientUser {
+    var email: String
+    var name: String
+
+    @Transient
+    var cachedDisplayName: String?  // Optional transient (nil default)
+
+    @Transient
+    var sessionToken: String = ""   // Transient with explicit default
+
+    @Transient
+    var isOnline: Bool = false      // Transient boolean
 }

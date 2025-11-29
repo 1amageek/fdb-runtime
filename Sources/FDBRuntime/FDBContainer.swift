@@ -60,10 +60,10 @@ public final class FDBContainer: Sendable {
     /// Schema (version, entities, indexes)
     public let schema: Schema
 
-    /// Configurations (SwiftData-compatible)
-    public let configurations: [FDBConfiguration]
+    /// Configuration (SwiftData-compatible)
+    public let configuration: FDBConfiguration?
 
-    /// Aggregated index configurations from all FDBConfiguration objects
+    /// Index configurations grouped by indexName
     ///
     /// Key: indexName (e.g., "Document_embedding", "Article_content")
     /// Value: Array of configurations (supports multiple configs per index, e.g., multi-language)
@@ -145,7 +145,7 @@ public final class FDBContainer: Sendable {
 
     // MARK: - Initialization
 
-    /// Initialize FDBContainer with schema and configurations (SwiftData-compatible)
+    /// Initialize FDBContainer with schema and configuration (SwiftData-compatible)
     ///
     /// **Recommended**: Use this initializer for SwiftData-like API.
     ///
@@ -162,7 +162,7 @@ public final class FDBContainer: Sendable {
     ///
     /// - Parameters:
     ///   - schema: The complete schema defining all entities
-    ///   - configurations: Array of FDBConfiguration objects for model-specific settings (optional)
+    ///   - configuration: Optional FDBConfiguration (for URL and index configurations)
     ///   - migrations: Array of migrations for schema evolution (optional)
     ///   - directoryLayer: Optional custom DirectoryLayer (for test isolation)
     ///   - dataStore: Optional custom DataStore (for testing or alternative backends)
@@ -173,46 +173,27 @@ public final class FDBContainer: Sendable {
     /// let container = try FDBContainer(for: schema)
     /// ```
     ///
-    /// **Example - With configurations for model-specific settings**:
-    /// ```swift
-    /// let schema = Schema([User.self, Order.self, Product.self])
-    /// let container = try FDBContainer(
-    ///     for: schema,
-    ///     configurations: [
-    ///         FDBConfiguration(
-    ///             name: "main",
-    ///             schema: Schema([User.self, Product.self])  // This config handles User and Product
-    ///         ),
-    ///         FDBConfiguration(
-    ///             name: "orders",
-    ///             schema: Schema([Order.self])  // This config handles Order
-    ///         )
-    ///     ]
-    /// )
-    /// ```
-    ///
-    /// **Example - With index configurations**:
+    /// **Example - With configuration**:
     /// ```swift
     /// let schema = Schema([Document.self])
     /// let container = try FDBContainer(
     ///     for: schema,
-    ///     configurations: [
-    ///         FDBConfiguration(
-    ///             indexConfigurations: [
-    ///                 VectorIndexConfiguration<Document>(
-    ///                     keyPath: \.embedding,
-    ///                     dimensions: 1536
-    ///                 )
-    ///             ]
-    ///         )
-    ///     ]
+    ///     configuration: FDBConfiguration(
+    ///         url: URL(filePath: "/etc/foundationdb/fdb.cluster"),
+    ///         indexConfigurations: [
+    ///             VectorIndexConfiguration<Document>(
+    ///                 keyPath: \.embedding,
+    ///                 dimensions: 1536
+    ///             )
+    ///         ]
+    ///     )
     /// )
     /// ```
     ///
     /// - Throws: Error if database connection fails or validation fails
     public init(
         for schema: Schema,
-        configurations: [FDBConfiguration] = [],
+        configuration: FDBConfiguration? = nil,
         migrations: [Migration] = [],
         directoryLayer: FoundationDB.DirectoryLayer? = nil,
         dataStore: (any DataStore)? = nil
@@ -222,36 +203,30 @@ public final class FDBContainer: Sendable {
             throw FDBRuntimeError.internalError("Schema must contain at least one entity")
         }
 
-        // Get first configuration for connection settings (or use defaults)
-        let firstConfig = configurations.first
-
         // Note: API version selection must be done globally before creating FDBContainer
-        if let apiVersion = firstConfig?.apiVersion {
+        if let apiVersion = configuration?.apiVersion {
             let logger = Logger(label: "com.fdb.runtime.container")
             logger.warning("API version \(apiVersion) specified in configuration, but API version must be selected globally before FDBContainer initialization. This value is ignored.")
         }
 
-        // Open database connection (use first non-nil url from configurations)
-        let clusterFilePath = configurations.compactMap(\.url).first?.path
-        let database = try FDBClient.openDatabase(clusterFilePath: clusterFilePath)
+        // Open database connection (use URL from configuration if provided)
+        let database = try FDBClient.openDatabase(clusterFilePath: configuration?.url?.path)
 
-        // Validate configuration schemas are subsets of the main schema
-        let schemaEntityNames = Set(schema.entities.map(\.name))
-        for config in configurations {
-            if let configSchema = config.schema {
-                let configEntityNames = Set(configSchema.entities.map(\.name))
-                let unknownEntities = configEntityNames.subtracting(schemaEntityNames)
-                if !unknownEntities.isEmpty {
-                    throw FDBRuntimeError.internalError(
-                        "Configuration '\(config.name ?? "unnamed")' references unknown entities: \(unknownEntities.sorted()). " +
-                        "All entities must be defined in the top-level schema."
-                    )
-                }
+        // Validate configuration schema is subset of the main schema
+        if let configSchema = configuration?.schema {
+            let schemaEntityNames = Set(schema.entities.map(\.name))
+            let configEntityNames = Set(configSchema.entities.map(\.name))
+            let unknownEntities = configEntityNames.subtracting(schemaEntityNames)
+            if !unknownEntities.isEmpty {
+                throw FDBRuntimeError.internalError(
+                    "Configuration '\(configuration?.name ?? "unnamed")' references unknown entities: \(unknownEntities.sorted()). " +
+                    "All entities must be defined in the top-level schema."
+                )
             }
         }
 
-        // Aggregate index configurations from all configurations
-        let aggregatedIndexConfigs = Self.aggregateIndexConfigurations(from: configurations)
+        // Aggregate index configurations
+        let aggregatedIndexConfigs = Self.aggregateIndexConfigurations(configuration?.indexConfigurations ?? [])
 
         // Validate index configurations reference entities in schema
         try Self.validateIndexConfigurations(
@@ -262,7 +237,7 @@ public final class FDBContainer: Sendable {
         // Initialize properties
         self.database = database
         self.schema = schema
-        self.configurations = configurations
+        self.configuration = configuration
         self.indexConfigurations = aggregatedIndexConfigs
         self.migrations = migrations
         self._migrationPlan = nil
@@ -341,7 +316,7 @@ public final class FDBContainer: Sendable {
     /// Initialize FDBContainer (low-level API)
     ///
     /// **Use this initializer only when you need manual control over database initialization.**
-    /// For typical use cases, prefer `init(configurations:)`.
+    /// For typical use cases, prefer `init(for:configuration:)`.
     ///
     /// - Parameters:
     ///   - database: The FDB database
@@ -392,9 +367,38 @@ public final class FDBContainer: Sendable {
         indexConfigurations: [any IndexConfiguration] = [],
         dataStore: (any DataStore)? = nil
     ) {
+        // Validate schema is not empty
+        precondition(!schema.entities.isEmpty, "Schema must contain at least one entity")
+
+        // Validate index configurations
+        let schemaEntityNames = Set(schema.entities.map(\.name))
+        for config in indexConfigurations {
+            let indexName = config.indexName
+            let modelTypeName = config.modelTypeName
+
+            // Validate model exists in schema
+            precondition(
+                schemaEntityNames.contains(modelTypeName),
+                "IndexConfiguration '\(indexName)' references unknown model '\(modelTypeName)'"
+            )
+
+            // Validate index exists in schema
+            guard let descriptor = schema.indexDescriptor(named: indexName) else {
+                preconditionFailure("IndexConfiguration references unknown index '\(indexName)'")
+            }
+
+            // Validate kindIdentifier matches
+            let descriptorKindIdentifier = type(of: descriptor.kind).identifier
+            let configKindIdentifier = type(of: config).kindIdentifier
+            precondition(
+                descriptorKindIdentifier == configKindIdentifier,
+                "IndexConfiguration kind mismatch for '\(indexName)': expected '\(descriptorKindIdentifier)', got '\(configKindIdentifier)'"
+            )
+        }
+
         self.database = database
         self.schema = schema
-        self.configurations = []  // Empty for low-level API
+        self.configuration = nil  // Not used for low-level API
         self.indexConfigurations = Self.aggregateIndexConfigurations(indexConfigurations)
         self.migrations = migrations
         self._migrationPlan = nil
@@ -610,41 +614,31 @@ public final class FDBContainer: Sendable {
 
             let tuple = try Tuple.unpack(from: versionBytes)
             guard tuple.count == 3 else {
-                throw FDBRuntimeError.internalError("Invalid version format in database")
+                throw FDBRuntimeError.internalError("Invalid version format in database: expected 3 elements, got \(tuple.count)")
             }
 
-            // Support multiple formats for backwards compatibility:
-            // - (Int64, Int64, Int64) - old format
-            // - (Int64, Int, Int) - mixed format (transitional)
-            // - (Int, Int, Int) - new format
-            let major: Int
-            let minor: Int
-            let patch: Int
+            // Helper to convert any integer type to Int
+            func toInt(_ value: Any) -> Int? {
+                if let v = value as? Int { return v }
+                if let v = value as? Int64 { return Int(v) }
+                if let v = value as? Int32 { return Int(v) }
+                if let v = value as? Int16 { return Int(v) }
+                if let v = value as? Int8 { return Int(v) }
+                if let v = value as? UInt { return Int(v) }
+                if let v = value as? UInt64 { return Int(v) }
+                if let v = value as? UInt32 { return Int(v) }
+                if let v = value as? UInt16 { return Int(v) }
+                if let v = value as? UInt8 { return Int(v) }
+                return nil
+            }
 
-            if let maj64 = tuple[0] as? Int64 {
-                // First element is Int64
-                major = Int(maj64)
-
-                if let min64 = tuple[1] as? Int64, let pat64 = tuple[2] as? Int64 {
-                    // All Int64 (old format)
-                    minor = Int(min64)
-                    patch = Int(pat64)
-                } else if let minInt = tuple[1] as? Int, let patInt = tuple[2] as? Int {
-                    // Mixed format (Int64, Int, Int)
-                    minor = minInt
-                    patch = patInt
-                } else {
-                    throw FDBRuntimeError.internalError("Invalid version format in database")
-                }
-            } else if let majInt = tuple[0] as? Int,
-                      let minInt = tuple[1] as? Int,
-                      let patInt = tuple[2] as? Int {
-                // All Int (new format)
-                major = majInt
-                minor = minInt
-                patch = patInt
-            } else {
-                throw FDBRuntimeError.internalError("Invalid version format in database")
+            guard let major = toInt(tuple[0]),
+                  let minor = toInt(tuple[1]),
+                  let patch = toInt(tuple[2]) else {
+                throw FDBRuntimeError.internalError(
+                    "Invalid version format in database: expected integers, got types " +
+                    "(\(type(of: tuple[0])), \(type(of: tuple[1])), \(type(of: tuple[2])))"
+                )
             }
 
             return Schema.Version(major, minor, patch)
@@ -733,7 +727,8 @@ public final class FDBContainer: Sendable {
                 database: database,
                 schema: schema,
                 metadataSubspace: metadataSubspace,
-                storeRegistry: storeRegistry
+                storeRegistry: storeRegistry,
+                indexConfigurations: indexConfigurations
             )
 
             // Execute migration
@@ -810,10 +805,16 @@ extension FDBContainer {
     ///     }
     /// }
     ///
-    /// // Create container
+    /// // Create container with configuration
     /// let container = try FDBContainer(
     ///     for: AppSchemaV2.self,
-    ///     migrationPlan: AppMigrationPlan.self
+    ///     migrationPlan: AppMigrationPlan.self,
+    ///     configuration: FDBConfiguration(
+    ///         url: URL(filePath: "/etc/foundationdb/fdb.cluster"),
+    ///         indexConfigurations: [
+    ///             VectorIndexConfiguration<Document>(keyPath: \.embedding, dimensions: 1536)
+    ///         ]
+    ///     )
     /// )
     /// try await container.migrateIfNeeded()
     /// ```
@@ -821,12 +822,12 @@ extension FDBContainer {
     /// - Parameters:
     ///   - schema: The current VersionedSchema type
     ///   - migrationPlan: The SchemaMigrationPlan type defining migration path
-    ///   - url: Optional URL to FoundationDB cluster file
+    ///   - configuration: Optional FDBConfiguration (for URL and index configurations)
     /// - Throws: Error if initialization fails
     public convenience init<S: VersionedSchema, P: SchemaMigrationPlan>(
         for schema: S.Type,
         migrationPlan: P.Type,
-        url: URL? = nil
+        configuration: FDBConfiguration? = nil
     ) throws {
         // Validate migration plan
         try P.validate()
@@ -834,8 +835,8 @@ extension FDBContainer {
         // Create schema from VersionedSchema
         let schemaInstance = S.makeSchema()
 
-        // Open database connection
-        let database = try FDBClient.openDatabase(clusterFilePath: url?.path)
+        // Open database connection (use URL from configuration if provided)
+        let database = try FDBClient.openDatabase(clusterFilePath: configuration?.url?.path)
 
         // Create default subspace
         let subspace = Subspace(prefix: Tuple("fdb").pack())
@@ -844,7 +845,7 @@ extension FDBContainer {
         self.init(
             database: database,
             schema: schemaInstance,
-            configurations: [],
+            configuration: configuration,
             migrations: [],
             migrationPlan: migrationPlan,
             subspace: subspace,
@@ -857,15 +858,15 @@ extension FDBContainer {
     internal convenience init(
         database: any DatabaseProtocol,
         schema: Schema,
-        configurations: [FDBConfiguration],
+        configuration: FDBConfiguration?,
         migrations: [Migration],
         migrationPlan: (any SchemaMigrationPlan.Type)?,
         subspace: Subspace,
         directoryLayer: FoundationDB.DirectoryLayer,
         logger: Logger
     ) {
-        // Aggregate index configurations from all FDBConfiguration objects
-        let allIndexConfigs = configurations.flatMap(\.indexConfigurations)
+        // Extract index configurations from configuration
+        let indexConfigs = configuration?.indexConfigurations ?? []
 
         self.init(
             database: database,
@@ -874,7 +875,7 @@ extension FDBContainer {
             subspace: subspace,
             directoryLayer: directoryLayer,
             logger: logger,
-            indexConfigurations: allIndexConfigs
+            indexConfigurations: indexConfigs
         )
         // Note: migrationPlan is set via _setMigrationPlan after init
         _setMigrationPlan(migrationPlan)
@@ -975,7 +976,8 @@ extension FDBContainer {
             database: database,
             schema: schema,
             metadataSubspace: getMetadataSubspace(),
-            storeRegistry: storeRegistry
+            storeRegistry: storeRegistry,
+            indexConfigurations: indexConfigurations
         )
 
         // 1. Execute willMigrate if present
@@ -1117,32 +1119,7 @@ extension FDBContainer {
         return !configs.isEmpty
     }
 
-    /// Aggregate index configurations from multiple FDBConfiguration objects
-    ///
-    /// Groups configurations by indexName, allowing multiple configurations
-    /// for the same index (e.g., multi-language full-text search).
-    ///
-    /// - Parameter configurations: Array of FDBConfiguration objects
-    /// - Returns: Dictionary mapping indexName to array of configurations
-    internal static func aggregateIndexConfigurations(
-        from configurations: [FDBConfiguration]
-    ) -> [String: [any IndexConfiguration]] {
-        var result: [String: [any IndexConfiguration]] = [:]
-
-        for config in configurations {
-            for indexConfig in config.indexConfigurations {
-                let indexName = indexConfig.indexName
-                if result[indexName] == nil {
-                    result[indexName] = []
-                }
-                result[indexName]!.append(indexConfig)
-            }
-        }
-
-        return result
-    }
-
-    /// Aggregate index configurations from a flat array
+    /// Aggregate index configurations by indexName
     ///
     /// - Parameter indexConfigurations: Array of IndexConfiguration objects
     /// - Returns: Dictionary mapping indexName to array of configurations

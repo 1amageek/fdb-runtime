@@ -30,6 +30,7 @@ public protocol IndexBuildableEntity: Persistable {
     ///   - index: Index definition
     ///   - indexStateManager: Index state manager
     ///   - batchSize: Number of items per batch
+    ///   - configurations: Index configurations for runtime parameters (HNSW, full-text, etc.)
     /// - Throws: Error if index building fails
     static func buildEntityIndex(
         database: any DatabaseProtocol,
@@ -37,7 +38,8 @@ public protocol IndexBuildableEntity: Persistable {
         indexSubspace: Subspace,
         index: Index,
         indexStateManager: IndexStateManager,
-        batchSize: Int
+        batchSize: Int,
+        configurations: [any IndexConfiguration]
     ) async throws
 }
 
@@ -53,12 +55,14 @@ extension Persistable where Self: Codable {
         indexSubspace: Subspace,
         index: Index,
         indexStateManager: IndexStateManager,
-        batchSize: Int
+        batchSize: Int,
+        configurations: [any IndexConfiguration]
     ) async throws {
-        // Create IndexMaintainer based on IndexKind
+        // Create IndexMaintainer based on IndexKind (passing configurations)
         let indexMaintainer = try createIndexMaintainer(
             for: index,
-            indexSubspace: indexSubspace
+            indexSubspace: indexSubspace,
+            configurations: configurations
         )
 
         // Create and run OnlineIndexer
@@ -86,7 +90,8 @@ extension Persistable where Self: Codable {
     /// `IndexKindMaintainable` conformance to their corresponding IndexKind.
     private static func createIndexMaintainer(
         for index: Index,
-        indexSubspace: Subspace
+        indexSubspace: Subspace,
+        configurations: [any IndexConfiguration]
     ) throws -> any IndexMaintainer<Self> {
         // Default id expression (assumes "id" field)
         let idExpression = FieldKeyExpression(fieldName: "id")
@@ -97,7 +102,8 @@ extension Persistable where Self: Codable {
             return maintainable.makeIndexMaintainer(
                 index: index,
                 subspace: indexSubspace,
-                idExpression: idExpression
+                idExpression: idExpression,
+                configurations: configurations
             )
         } else {
             let kindIdentifier = type(of: index.kind).identifier
@@ -130,6 +136,7 @@ extension Persistable where Self: Codable {
 /// try await IndexBuilderRegistry.shared.buildIndex(
 ///     entityName: "User",
 ///     database: database,
+///     configurations: container.indexConfigurations.flatMap(\.value),
 ///     ...
 /// )
 /// ```
@@ -144,7 +151,8 @@ public final class IndexBuilderRegistry: Sendable {
         _ indexSubspace: Subspace,
         _ index: Index,
         _ indexStateManager: IndexStateManager,
-        _ batchSize: Int
+        _ batchSize: Int,
+        _ configurations: [any IndexConfiguration]
     ) async throws -> Void
 
     /// Mutable state protected by Mutex
@@ -167,14 +175,15 @@ public final class IndexBuilderRegistry: Sendable {
     /// - Parameter type: The Persistable type to register
     public func register<T: Persistable & Codable>(_ type: T.Type) {
         state.withLock { state in
-            state.builders[T.persistableType] = { database, itemSubspace, indexSubspace, index, stateManager, batchSize in
+            state.builders[T.persistableType] = { database, itemSubspace, indexSubspace, index, stateManager, batchSize, configurations in
                 try await T.buildEntityIndex(
                     database: database,
                     itemSubspace: itemSubspace,
                     indexSubspace: indexSubspace,
                     index: index,
                     indexStateManager: stateManager,
-                    batchSize: batchSize
+                    batchSize: batchSize,
+                    configurations: configurations
                 )
             }
         }
@@ -190,6 +199,7 @@ public final class IndexBuilderRegistry: Sendable {
     ///   - index: Index definition
     ///   - indexStateManager: Index state manager
     ///   - batchSize: Number of items per batch
+    ///   - configurations: Index configurations for runtime parameters
     /// - Throws: Error if entity not registered or build fails
     public func buildIndex(
         entityName: String,
@@ -198,7 +208,8 @@ public final class IndexBuilderRegistry: Sendable {
         indexSubspace: Subspace,
         index: Index,
         indexStateManager: IndexStateManager,
-        batchSize: Int
+        batchSize: Int,
+        configurations: [any IndexConfiguration]
     ) async throws {
         // Get builder synchronously (Mutex lock scope is minimal)
         let builder = try state.withLock { state -> IndexBuilder in
@@ -209,7 +220,7 @@ public final class IndexBuilderRegistry: Sendable {
         }
 
         // Execute builder outside of lock scope (I/O should not hold lock)
-        try await builder(database, itemSubspace, indexSubspace, index, indexStateManager, batchSize)
+        try await builder(database, itemSubspace, indexSubspace, index, indexStateManager, batchSize, configurations)
     }
 
     /// Check if an entity is registered
@@ -246,6 +257,7 @@ public struct EntityIndexBuilder {
     ///   - index: Index definition
     ///   - indexStateManager: Index state manager
     ///   - batchSize: Number of items per batch
+    ///   - configurations: Index configurations for runtime parameters
     /// - Throws: Error if entity not registered or build fails
     public static func buildIndex(
         entityName: String,
@@ -254,7 +266,8 @@ public struct EntityIndexBuilder {
         indexSubspace: Subspace,
         index: Index,
         indexStateManager: IndexStateManager,
-        batchSize: Int = 100
+        batchSize: Int = 100,
+        configurations: [any IndexConfiguration] = []
     ) async throws {
         try await IndexBuilderRegistry.shared.buildIndex(
             entityName: entityName,
@@ -263,7 +276,8 @@ public struct EntityIndexBuilder {
             indexSubspace: indexSubspace,
             index: index,
             indexStateManager: indexStateManager,
-            batchSize: batchSize
+            batchSize: batchSize,
+            configurations: configurations
         )
     }
 
@@ -277,6 +291,7 @@ public struct EntityIndexBuilder {
     ///   - index: Index definition
     ///   - indexStateManager: Index state manager
     ///   - batchSize: Number of items per batch
+    ///   - configurations: Index configurations for runtime parameters
     /// - Throws: Error if build fails
     public static func buildIndex<T: Persistable & Codable>(
         for type: T.Type,
@@ -285,7 +300,8 @@ public struct EntityIndexBuilder {
         indexSubspace: Subspace,
         index: Index,
         indexStateManager: IndexStateManager,
-        batchSize: Int = 100
+        batchSize: Int = 100,
+        configurations: [any IndexConfiguration] = []
     ) async throws {
         try await T.buildEntityIndex(
             database: database,
@@ -293,15 +309,22 @@ public struct EntityIndexBuilder {
             indexSubspace: indexSubspace,
             index: index,
             indexStateManager: indexStateManager,
-            batchSize: batchSize
+            batchSize: batchSize,
+            configurations: configurations
         )
     }
 
     /// Build index using existential type dispatch
     ///
     /// This method enables building indexes for types stored as `any Persistable.Type`
-    /// (e.g., in Schema.Entity.persistableType). It uses the `_EntityIndexBuildable`
-    /// protocol to bridge the existential type to concrete index building.
+    /// (e.g., in Schema.Entity.persistableType). It uses multiple fallback strategies:
+    ///
+    /// 1. **IndexBuilderRegistry** (preferred): If the type was registered via
+    ///    `IndexBuilderRegistry.shared.register(Type.self)`, use the registered closure.
+    ///    This is the most reliable approach as it captures the concrete type at registration.
+    ///
+    /// 2. **_EntityIndexBuildable protocol**: Fall back to protocol-based dispatch.
+    ///    Note: This may not work for all types due to Swift's protocol extension limitations.
     ///
     /// - Parameters:
     ///   - persistableType: The Persistable metatype (from Schema.Entity.persistableType)
@@ -311,6 +334,7 @@ public struct EntityIndexBuilder {
     ///   - index: Index definition
     ///   - indexStateManager: Index state manager
     ///   - batchSize: Number of items per batch
+    ///   - configurations: Index configurations for runtime parameters
     /// - Throws: `EntityIndexBuilderError.typeNotBuildable` if the type doesn't support index building
     public static func buildIndex(
         forPersistableType persistableType: any Persistable.Type,
@@ -319,24 +343,45 @@ public struct EntityIndexBuilder {
         indexSubspace: Subspace,
         index: Index,
         indexStateManager: IndexStateManager,
-        batchSize: Int = 100
+        batchSize: Int = 100,
+        configurations: [any IndexConfiguration] = []
     ) async throws {
-        // Check if the type conforms to _EntityIndexBuildable
-        guard let buildableType = persistableType as? any _EntityIndexBuildable.Type else {
-            throw EntityIndexBuilderError.typeNotBuildable(
-                typeName: persistableType.persistableType,
-                reason: "Type does not conform to _EntityIndexBuildable (requires Codable conformance)"
+        let entityName = persistableType.persistableType
+
+        // Strategy 1: Try IndexBuilderRegistry first (most reliable)
+        if IndexBuilderRegistry.shared.isRegistered(entityName) {
+            try await IndexBuilderRegistry.shared.buildIndex(
+                entityName: entityName,
+                database: database,
+                itemSubspace: itemSubspace,
+                indexSubspace: indexSubspace,
+                index: index,
+                indexStateManager: indexStateManager,
+                batchSize: batchSize,
+                configurations: configurations
             )
+            return
         }
 
-        // Use the protocol method to build index
-        try await buildableType._buildIndex(
-            database: database,
-            itemSubspace: itemSubspace,
-            indexSubspace: indexSubspace,
-            index: index,
-            indexStateManager: indexStateManager,
-            batchSize: batchSize
+        // Strategy 2: Fall back to _EntityIndexBuildable protocol dispatch
+        if let buildableType = persistableType as? any _EntityIndexBuildable.Type {
+            try await buildableType._buildIndex(
+                database: database,
+                itemSubspace: itemSubspace,
+                indexSubspace: indexSubspace,
+                index: index,
+                indexStateManager: indexStateManager,
+                batchSize: batchSize,
+                configurations: configurations
+            )
+            return
+        }
+
+        // Neither strategy worked
+        throw EntityIndexBuilderError.typeNotBuildable(
+            typeName: entityName,
+            reason: "Type is not registered in IndexBuilderRegistry and does not conform to _EntityIndexBuildable. " +
+                    "Ensure the type is Codable and was created via Schema([Type.self]) or manually registered."
         )
     }
 }
@@ -369,7 +414,8 @@ public protocol _EntityIndexBuildable: Persistable {
         indexSubspace: Subspace,
         index: Index,
         indexStateManager: IndexStateManager,
-        batchSize: Int
+        batchSize: Int,
+        configurations: [any IndexConfiguration]
     ) async throws
 }
 
@@ -384,7 +430,8 @@ extension Persistable where Self: Codable {
         indexSubspace: Subspace,
         index: Index,
         indexStateManager: IndexStateManager,
-        batchSize: Int
+        batchSize: Int,
+        configurations: [any IndexConfiguration]
     ) async throws {
         try await Self.buildEntityIndex(
             database: database,
@@ -392,7 +439,8 @@ extension Persistable where Self: Codable {
             indexSubspace: indexSubspace,
             index: index,
             indexStateManager: indexStateManager,
-            batchSize: batchSize
+            batchSize: batchSize,
+            configurations: configurations
         )
     }
 }

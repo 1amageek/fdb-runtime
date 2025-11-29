@@ -109,18 +109,26 @@ public struct MigrationContext: Sendable {
     /// Maps item type names to their store information.
     private let storeRegistry: [String: MigrationStoreInfo]
 
+    /// Index configurations from FDBContainer
+    ///
+    /// Maps index names to their runtime configurations (HNSW params, full-text settings, etc.)
+    /// Used when building indexes via EntityIndexBuilder.
+    internal let indexConfigurations: [String: [any IndexConfiguration]]
+
     // MARK: - Initialization
 
     internal init(
         database: any DatabaseProtocol,
         schema: Schema,
         metadataSubspace: Subspace,
-        storeRegistry: [String: MigrationStoreInfo]
+        storeRegistry: [String: MigrationStoreInfo],
+        indexConfigurations: [String: [any IndexConfiguration]] = [:]
     ) {
         self.database = database
         self.schema = schema
         self.metadataSubspace = metadataSubspace
         self.storeRegistry = storeRegistry
+        self.indexConfigurations = indexConfigurations
     }
 
     // MARK: - Store Access
@@ -217,6 +225,9 @@ public struct MigrationContext: Sendable {
         // concrete type's buildEntityIndex implementation.
         let itemSubspace = info.subspace.subspace("R")  // Records subspace
 
+        // Get configurations for this index (HNSW params, full-text settings, etc.)
+        let configs = indexConfigurations[index.name] ?? []
+
         do {
             // Use the persistableType directly from Entity
             try await EntityIndexBuilder.buildIndex(
@@ -226,7 +237,8 @@ public struct MigrationContext: Sendable {
                 indexSubspace: info.indexSubspace,
                 index: index,
                 indexStateManager: indexManager.stateManager,
-                batchSize: batchSize
+                batchSize: batchSize,
+                configurations: configs
             )
         } catch let error as EntityIndexBuilderError {
             // Re-throw with more context
@@ -348,19 +360,7 @@ public struct MigrationContext: Sendable {
             subspace: info.indexSubspace
         )
 
-        // 4. Disable index
-        try await indexManager.disable(indexName)
-
-        // 5. Clear existing data
-        let indexRange = info.indexSubspace.subspace(indexName).range()
-        try await database.withTransaction { transaction in
-            transaction.clearRange(
-                beginKey: indexRange.begin,
-                endKey: indexRange.end
-            )
-        }
-
-        // 6. Re-register index with itemTypes
+        // 4. Convert and register index first (needed for IndexManager operations)
         let index = try convertDescriptorToIndex(
             indexDescriptor,
             entity: targetEntity,
@@ -372,15 +372,29 @@ public struct MigrationContext: Sendable {
             // Index already registered - OK
         }
 
-        // 7. Enable index (→ writeOnly state)
-        // Should always succeed since we just disabled it, but check for safety
+        // 5. Disable index
         let currentState = try await indexManager.state(of: indexName)
-        if currentState == .disabled {
-            try await indexManager.enable(indexName)
+        if currentState != .disabled {
+            try await indexManager.disable(indexName)
         }
+
+        // 6. Clear existing data
+        let indexRange = info.indexSubspace.subspace(indexName).range()
+        try await database.withTransaction { transaction in
+            transaction.clearRange(
+                beginKey: indexRange.begin,
+                endKey: indexRange.end
+            )
+        }
+
+        // 7. Enable index (→ writeOnly state)
+        try await indexManager.enable(indexName)
 
         // 8. Build index via OnlineIndexer using EntityIndexBuilder
         let itemSubspace = info.subspace.subspace("R")  // Records subspace
+
+        // Get configurations for this index (HNSW params, full-text settings, etc.)
+        let configs = indexConfigurations[indexName] ?? []
 
         do {
             try await EntityIndexBuilder.buildIndex(
@@ -390,7 +404,8 @@ public struct MigrationContext: Sendable {
                 indexSubspace: info.indexSubspace,
                 index: index,
                 indexStateManager: indexManager.stateManager,
-                batchSize: batchSize
+                batchSize: batchSize,
+                configurations: configs
             )
         } catch EntityIndexBuilderError.entityNotRegistered {
             throw FDBRuntimeError.internalError(
