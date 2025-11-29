@@ -7,8 +7,6 @@
 // **Note**: This is the metadata-only base protocol. For runtime capabilities
 // (creating IndexMaintainer), see IndexKind protocol in FDBIndexing.
 
-import Foundation
-
 /// Protocol for defining index kinds
 ///
 /// **Extensibility**: Third parties can define custom kinds

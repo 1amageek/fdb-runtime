@@ -1,6 +1,6 @@
 # FDBRuntime アーキテクチャ設計
 
-**Last Updated**: 2025-11-26
+**Last Updated**: 2025-11-29
 
 ## 概要
 
@@ -579,4 +579,4 @@ FDBRuntime は、複数のデータモデル層を統一基盤でサポートす
 
 ---
 
-**Last Updated**: 2025-11-28
+**Last Updated**: 2025-11-29

@@ -4,7 +4,6 @@
 // These protocols bridge IndexConfiguration (defined in FDBModel) with
 // IndexMaintainer implementations (defined in upper layers).
 
-import Foundation
 import FDBModel
 
 /// Protocol for IndexMaintainer that accepts a single IndexConfiguration

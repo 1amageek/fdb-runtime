@@ -932,26 +932,26 @@ extension FDBContainer {
         // Get current version
         let currentVersion = try await getCurrentSchemaVersion()
 
-        if currentVersion == nil {
+        guard let currentVersion else {
             // New database - set initial version
             try await setCurrentSchemaVersion(targetVersion)
             logger.info("Set initial schema version: \(targetVersion)")
             return
         }
 
-        if currentVersion! >= targetVersion {
+        if currentVersion >= targetVersion {
             // Already at or past target version
             return
         }
 
         // Find migration path
-        let stages = try plan.findPath(from: currentVersion!, to: targetVersion)
+        let stages = try plan.findPath(from: currentVersion, to: targetVersion)
 
         if stages.isEmpty {
             return
         }
 
-        logger.info("Starting migration from \(currentVersion!) to \(targetVersion)")
+        logger.info("Starting migration from \(currentVersion) to \(targetVersion)")
 
         // Execute each stage
         for stage in stages {
@@ -1130,10 +1130,7 @@ extension FDBContainer {
 
         for indexConfig in indexConfigurations {
             let indexName = indexConfig.indexName
-            if result[indexName] == nil {
-                result[indexName] = []
-            }
-            result[indexName]!.append(indexConfig)
+            result[indexName, default: []].append(indexConfig)
         }
 
         return result

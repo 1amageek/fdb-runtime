@@ -5,7 +5,6 @@
 // - FDBDataStore: Default FoundationDB implementation
 // - Custom implementations: For testing or alternative backends
 
-import Foundation
 import FoundationDB
 import FDBModel
 import FDBCore

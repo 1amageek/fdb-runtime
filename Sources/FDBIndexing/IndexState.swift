@@ -4,8 +4,6 @@
 // Defines the three-state lifecycle of indexes (disabled, writeOnly, readable).
 // State transitions are controlled by IndexStateManager.
 
-import Foundation
-
 /// Index lifecycle state
 ///
 /// **Purpose**: Manage index construction and availability

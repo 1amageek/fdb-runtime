@@ -1,4 +1,8 @@
-import Foundation
+import struct Foundation.Data
+
+#if canImport(ObjectiveC)
+import class Foundation.NSNull
+#endif
 
 /// Represents a field value that can be compared and hashed
 ///
@@ -72,8 +76,10 @@ public enum FieldValue: Sendable, Hashable, Codable {
             self = .bool(v)
         case let v as Data:
             self = .data(v)
+        #if canImport(ObjectiveC)
         case is NSNull:
             self = .null
+        #endif
         case nil as Any?:
             self = .null
         default:

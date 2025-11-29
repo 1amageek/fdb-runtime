@@ -255,7 +255,7 @@ extension MockConfigurableIndexKind: IndexKindMaintainable {
         idExpression: KeyExpression,
         configurations: [any IndexConfiguration]
     ) -> any IndexMaintainer<Item> {
-        var maintainer = MockConfigurableIndexMaintainer<Item>(
+        let maintainer = MockConfigurableIndexMaintainer<Item>(
             index: index,
             subspace: subspace,
             idExpression: idExpression,
@@ -290,7 +290,7 @@ extension MockMultiConfigIndexKind: IndexKindMaintainable {
         idExpression: KeyExpression,
         configurations: [any IndexConfiguration]
     ) -> any IndexMaintainer<Item> {
-        var maintainer = MockMultiConfigIndexMaintainer<Item>(
+        let maintainer = MockMultiConfigIndexMaintainer<Item>(
             index: index,
             subspace: subspace,
             idExpression: idExpression

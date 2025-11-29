@@ -1,6 +1,4 @@
-import Foundation
 import FDBModel
-import Synchronization
 
 /// Schema - Type-independent schema management
 ///
@@ -416,18 +414,18 @@ public struct FormerIndex: Sendable, Hashable, Equatable {
 // MARK: - SchemaError
 
 /// Errors that can occur during Schema validation
-public enum SchemaError: Error, CustomStringConvertible {
+public enum SchemaError: Error, CustomStringConvertible, Sendable {
     /// Duplicate index name detected across entities
     ///
     /// Index names must be unique across all entities in a schema.
     /// This error provides details about both the existing and duplicate index.
-    case duplicateIndexName(indexName: String, existingKeyPaths: [AnyKeyPath], duplicateKeyPaths: [AnyKeyPath])
+    case duplicateIndexName(indexName: String, existingKeyPaths: [String], duplicateKeyPaths: [String])
 
     public var description: String {
         switch self {
         case .duplicateIndexName(let indexName, let existingKeyPaths, let duplicateKeyPaths):
-            let existingDesc = existingKeyPaths.map { String(describing: $0) }.joined(separator: ", ")
-            let duplicateDesc = duplicateKeyPaths.map { String(describing: $0) }.joined(separator: ", ")
+            let existingDesc = existingKeyPaths.joined(separator: ", ")
+            let duplicateDesc = duplicateKeyPaths.joined(separator: ", ")
             return "Duplicate index name '\(indexName)' detected. " +
                    "Existing index keyPaths: [\(existingDesc)], " +
                    "duplicate index keyPaths: [\(duplicateDesc)]. " +
@@ -464,8 +462,8 @@ extension Schema {
             if let existing = seenIndexes[descriptor.name] {
                 throw SchemaError.duplicateIndexName(
                     indexName: descriptor.name,
-                    existingKeyPaths: existing.keyPaths,
-                    duplicateKeyPaths: descriptor.keyPaths
+                    existingKeyPaths: existing.keyPaths.map { String(describing: $0) },
+                    duplicateKeyPaths: descriptor.keyPaths.map { String(describing: $0) }
                 )
             }
             seenIndexes[descriptor.name] = descriptor

@@ -4,7 +4,6 @@
 // IndexMaintainer implementors are responsible for adding IndexKindMaintainable
 // conformance to their corresponding IndexKind.
 
-import Foundation
 import FoundationDB
 import FDBModel
 import FDBCore

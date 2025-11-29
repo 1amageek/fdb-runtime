@@ -1,4 +1,3 @@
-import Foundation
 import FoundationDB
 
 /// Protocol for expressions that extract key values from records

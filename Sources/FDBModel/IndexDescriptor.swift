@@ -4,8 +4,6 @@
 // Provides declarative index definition using Swift KeyPaths.
 // Used by macro generation, schema definition, and execution layer interpretation.
 
-import Foundation
-
 /// Index descriptor (metadata)
 ///
 /// **Purpose**: Declarative index definition using KeyPaths

@@ -4,7 +4,7 @@
 
 This document describes the simplified, finalized architecture for fdb-runtime and fdb-indexes packages based on the design discussion.
 
-**Last Updated**: 2025-11-28
+**Last Updated**: 2025-11-29
 
 ## Key Design Decisions
 

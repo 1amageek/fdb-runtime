@@ -5,6 +5,7 @@ import Testing
 import Foundation
 import FoundationDB
 import Logging
+import Synchronization
 @testable import FDBModel
 @testable import FDBCore
 @testable import FDBIndexing
@@ -731,11 +732,19 @@ struct TrackingMultiConfig: IndexConfiguration, Sendable {
 ///
 /// Uses composite keys (subspace prefix + index name) to ensure test isolation
 /// when tests run in parallel across different suites.
-final class MaintainerTracker: @unchecked Sendable {
+///
+/// Uses `Mutex` pattern per CLAUDE.md guidelines.
+final class MaintainerTracker: Sendable {
     static let shared = MaintainerTracker()
 
-    private var _trackingMaintainers: [String: Any] = [:]
-    private let lock = NSLock()
+    private struct State: @unchecked Sendable {
+        var trackingMaintainers: [String: Any] = [:]
+    }
+    private let state: Mutex<State>
+
+    private init() {
+        self.state = Mutex(State())
+    }
 
     /// Make composite key from subspace and index name for test isolation
     private func makeKey(subspace: Subspace, indexName: String) -> String {
@@ -746,36 +755,36 @@ final class MaintainerTracker: @unchecked Sendable {
 
     func register<Item: Persistable>(_ maintainer: TrackingIndexMaintainer<Item>, for indexName: String, subspace: Subspace) {
         let key = makeKey(subspace: subspace, indexName: indexName)
-        lock.withLock {
-            _trackingMaintainers[key] = maintainer
+        state.withLock { state in
+            state.trackingMaintainers[key] = maintainer
         }
     }
 
     func get<Item: Persistable>(for indexName: String, subspace: Subspace, as type: TrackingIndexMaintainer<Item>.Type) -> TrackingIndexMaintainer<Item>? {
         let key = makeKey(subspace: subspace, indexName: indexName)
-        return lock.withLock {
-            _trackingMaintainers[key] as? TrackingIndexMaintainer<Item>
+        return state.withLock { state in
+            state.trackingMaintainers[key] as? TrackingIndexMaintainer<Item>
         }
     }
 
     func registerMulti<Item: Persistable>(_ maintainer: TrackingMultiIndexMaintainer<Item>, for indexName: String, subspace: Subspace) {
         let key = makeKey(subspace: subspace, indexName: indexName)
-        lock.withLock {
-            _trackingMaintainers[key] = maintainer
+        state.withLock { state in
+            state.trackingMaintainers[key] = maintainer
         }
     }
 
     func getMulti<Item: Persistable>(for indexName: String, subspace: Subspace, as type: TrackingMultiIndexMaintainer<Item>.Type) -> TrackingMultiIndexMaintainer<Item>? {
         let key = makeKey(subspace: subspace, indexName: indexName)
-        return lock.withLock {
-            _trackingMaintainers[key] as? TrackingMultiIndexMaintainer<Item>
+        return state.withLock { state in
+            state.trackingMaintainers[key] as? TrackingMultiIndexMaintainer<Item>
         }
     }
 
     /// Find any maintainer matching the index name (for tests that run sequentially after clear())
     func getAny<Item: Persistable>(for indexName: String, as type: TrackingIndexMaintainer<Item>.Type) -> TrackingIndexMaintainer<Item>? {
-        return lock.withLock {
-            for (key, value) in _trackingMaintainers {
+        return state.withLock { state in
+            for (key, value) in state.trackingMaintainers {
                 if key.hasSuffix(":\(indexName)"), let maintainer = value as? TrackingIndexMaintainer<Item> {
                     return maintainer
                 }
@@ -786,8 +795,8 @@ final class MaintainerTracker: @unchecked Sendable {
 
     /// Find all maintainers matching the index name (for filtering by testMarker when tests run in parallel)
     func getAll<Item: Persistable>(for indexName: String, as type: TrackingIndexMaintainer<Item>.Type) -> [TrackingIndexMaintainer<Item>] {
-        return lock.withLock {
-            _trackingMaintainers.compactMap { key, value in
+        return state.withLock { state in
+            state.trackingMaintainers.compactMap { key, value in
                 if key.hasSuffix(":\(indexName)"), let maintainer = value as? TrackingIndexMaintainer<Item> {
                     return maintainer
                 }
@@ -798,8 +807,8 @@ final class MaintainerTracker: @unchecked Sendable {
 
     /// Find any multi-config maintainer matching the index name (for tests that run sequentially after clear())
     func getAnyMulti<Item: Persistable>(for indexName: String, as type: TrackingMultiIndexMaintainer<Item>.Type) -> TrackingMultiIndexMaintainer<Item>? {
-        return lock.withLock {
-            for (key, value) in _trackingMaintainers {
+        return state.withLock { state in
+            for (key, value) in state.trackingMaintainers {
                 if key.hasSuffix(":\(indexName)"), let maintainer = value as? TrackingMultiIndexMaintainer<Item> {
                     return maintainer
                 }
@@ -810,8 +819,8 @@ final class MaintainerTracker: @unchecked Sendable {
 
     /// Find all multi-config maintainers matching the index name
     func getAllMulti<Item: Persistable>(for indexName: String, as type: TrackingMultiIndexMaintainer<Item>.Type) -> [TrackingMultiIndexMaintainer<Item>] {
-        return lock.withLock {
-            _trackingMaintainers.compactMap { key, value in
+        return state.withLock { state in
+            state.trackingMaintainers.compactMap { key, value in
                 if key.hasSuffix(":\(indexName)"), let maintainer = value as? TrackingMultiIndexMaintainer<Item> {
                     return maintainer
                 }
@@ -821,55 +830,59 @@ final class MaintainerTracker: @unchecked Sendable {
     }
 
     func clear() {
-        lock.withLock {
-            _trackingMaintainers.removeAll()
+        state.withLock { state in
+            state.trackingMaintainers.removeAll()
         }
     }
 }
 
 /// IndexMaintainer that tracks configuration application and scan calls
-final class TrackingIndexMaintainer<Item: Persistable>: IndexMaintainer, @unchecked Sendable {
+///
+/// Uses `Mutex` pattern per CLAUDE.md guidelines.
+final class TrackingIndexMaintainer<Item: Persistable>: IndexMaintainer, Sendable {
     let index: Index
     let subspace: Subspace
     let idExpression: KeyExpression
 
-    // Configuration tracking
-    private let lock = NSLock()
-    private var _configurationApplied: Bool = false
-    private var _appliedDimensions: Int = 0
-    private var _appliedTestMarker: String = ""
-    private var _scannedItemCount: Int = 0
+    private struct State: Sendable {
+        var configurationApplied: Bool = false
+        var appliedDimensions: Int = 0
+        var appliedTestMarker: String = ""
+        var scannedItemCount: Int = 0
+    }
+    private let state: Mutex<State>
 
     var configurationApplied: Bool {
-        lock.withLock { _configurationApplied }
+        state.withLock { $0.configurationApplied }
     }
 
     var appliedDimensions: Int {
-        lock.withLock { _appliedDimensions }
+        state.withLock { $0.appliedDimensions }
     }
 
     var appliedTestMarker: String {
-        lock.withLock { _appliedTestMarker }
+        state.withLock { $0.appliedTestMarker }
     }
 
     var scannedItemCount: Int {
-        lock.withLock { _scannedItemCount }
+        state.withLock { $0.scannedItemCount }
     }
 
     init(index: Index, subspace: Subspace, idExpression: KeyExpression) {
         self.index = index
         self.subspace = subspace
         self.idExpression = idExpression
+        self.state = Mutex(State())
 
         // Register self in global tracker for test verification (uses subspace for isolation)
         MaintainerTracker.shared.register(self, for: index.name, subspace: subspace)
     }
 
     func applyConfiguration(dimensions: Int, testMarker: String) {
-        lock.withLock {
-            _configurationApplied = true
-            _appliedDimensions = dimensions
-            _appliedTestMarker = testMarker
+        state.withLock { state in
+            state.configurationApplied = true
+            state.appliedDimensions = dimensions
+            state.appliedTestMarker = testMarker
         }
     }
 
@@ -886,42 +899,47 @@ final class TrackingIndexMaintainer<Item: Persistable>: IndexMaintainer, @unchec
         id: Tuple,
         transaction: any TransactionProtocol
     ) async throws {
-        lock.withLock {
-            _scannedItemCount += 1
+        state.withLock { state in
+            state.scannedItemCount += 1
         }
     }
 }
 
 /// Multi-config IndexMaintainer that tracks all applied configurations
-final class TrackingMultiIndexMaintainer<Item: Persistable>: IndexMaintainer, @unchecked Sendable {
+///
+/// Uses `Mutex` pattern per CLAUDE.md guidelines.
+final class TrackingMultiIndexMaintainer<Item: Persistable>: IndexMaintainer, Sendable {
     let index: Index
     let subspace: Subspace
     let idExpression: KeyExpression
 
-    private let lock = NSLock()
-    private var _appliedLanguages: Set<String> = []
-    private var _scannedItemCount: Int = 0
+    private struct State: Sendable {
+        var appliedLanguages: Set<String> = []
+        var scannedItemCount: Int = 0
+    }
+    private let state: Mutex<State>
 
     var appliedLanguages: Set<String> {
-        lock.withLock { _appliedLanguages }
+        state.withLock { $0.appliedLanguages }
     }
 
     var scannedItemCount: Int {
-        lock.withLock { _scannedItemCount }
+        state.withLock { $0.scannedItemCount }
     }
 
     init(index: Index, subspace: Subspace, idExpression: KeyExpression) {
         self.index = index
         self.subspace = subspace
         self.idExpression = idExpression
+        self.state = Mutex(State())
 
         // Register self in global tracker (uses subspace for isolation)
         MaintainerTracker.shared.registerMulti(self, for: index.name, subspace: subspace)
     }
 
     func addLanguage(_ language: String) {
-        lock.withLock {
-            _appliedLanguages.insert(language)
+        state.withLock { state in
+            _ = state.appliedLanguages.insert(language)
         }
     }
 
@@ -938,8 +956,8 @@ final class TrackingMultiIndexMaintainer<Item: Persistable>: IndexMaintainer, @u
         id: Tuple,
         transaction: any TransactionProtocol
     ) async throws {
-        lock.withLock {
-            _scannedItemCount += 1
+        state.withLock { state in
+            state.scannedItemCount += 1
         }
     }
 }
@@ -1355,15 +1373,6 @@ struct MultipleIndexConfigurationTests {
         // Create migration that adds the index
         let newIndex = MultiConfigTestItem.indexDescriptors.first!
 
-        // Create schema V1 (without index)
-        let entityV1 = Schema.Entity(
-            name: "MultiConfigTestItem",
-            allFields: MultiConfigTestItem.allFields,
-            indexDescriptors: [],
-            enumMetadata: [:]
-        )
-        let schemaV1 = Schema(entities: [entityV1], version: Schema.Version(1, 0, 0))
-
         let migration = Migration(
             fromVersion: Schema.Version(1, 0, 0),
             toVersion: Schema.Version(2, 0, 0),
@@ -1462,9 +1471,6 @@ struct IndexConfigurationPerformanceTests {
                 language: "lang_\(i)"
             ))
         }
-
-        // Create schema
-        let schema = Schema([ConfigTestUser.self])
 
         // Measure aggregation time
         let startTime = DispatchTime.now()

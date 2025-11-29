@@ -1,5 +1,3 @@
-import Foundation
-
 /// Persistable protocol - Storage-independent persistable model interface
 ///
 /// This protocol defines the metadata and serialization interface for persistable data models.

@@ -1,4 +1,3 @@
-import Foundation
 import FDBModel
 
 /// VersionedSchema - SwiftData-compatible protocol for defining schema versions

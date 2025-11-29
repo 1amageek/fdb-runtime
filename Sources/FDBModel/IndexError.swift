@@ -1,8 +1,6 @@
 // IndexError.swift
 // FDBIndexing - Error types for index operations
 
-import Foundation
-
 /// Errors that can occur during index operations
 public enum IndexError: Error, CustomStringConvertible {
     /// Invalid index configuration

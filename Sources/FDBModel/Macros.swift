@@ -1,5 +1,3 @@
-import Foundation
-
 /// @Persistable macro declaration
 ///
 /// Generates Persistable protocol conformance with metadata methods and ID management.
@@ -110,11 +108,51 @@ public macro Persistable(type: String) = #externalMacro(module: "FDBModelMacros"
 /// **Extended Index Kinds** (from fdb-indexes package - FDB-dependent):
 /// - `VectorIndexKind`: Vector similarity search (HNSW, IVF, flat scan)
 /// - `FullTextIndexKind`: Full-text search with inverted index
+/// - `AdjacencyIndexKind`: Graph adjacency index
 /// - Custom third-party implementations
 @freestanding(declaration)
 public macro Index<T: Persistable>(
     _ keyPaths: [PartialKeyPath<T>],
     type: any IndexKind = ScalarIndexKind(),
+    unique: Bool = false,
+    name: String? = nil
+) = #externalMacro(module: "FDBModelMacros", type: "IndexMacro")
+
+/// #Index macro with type-embedded KeyPaths
+///
+/// For IndexKind implementations that embed KeyPaths in their constructor.
+/// The macro extracts KeyPaths from the type parameter and generates IndexDescriptor.
+///
+/// **Usage**:
+/// ```swift
+/// // Graph adjacency index
+/// #Index<Edge>(type: AdjacencyIndexKind(
+///     source: \.source,
+///     target: \.target,
+///     label: \.label,
+///     bidirectional: true
+/// ))
+///
+/// // Spatial index
+/// #Index<Place>(type: SpatialIndexKind(
+///     latitude: \.lat,
+///     longitude: \.lon
+/// ))
+///
+/// // Vector index
+/// #Index<Document>(type: VectorIndexKind(
+///     embedding: \.vector,
+///     dimensions: 1536
+/// ))
+/// ```
+///
+/// **How it works**:
+/// 1. Macro extracts KeyPath literals (\.xxx) from type parameter
+/// 2. KeyPaths are stored in IndexDescriptor.keyPaths
+/// 3. IndexKind receives field names as strings (Codable-compatible)
+@freestanding(declaration)
+public macro Index<T: Persistable>(
+    type: any IndexKind,
     unique: Bool = false,
     name: String? = nil
 ) = #externalMacro(module: "FDBModelMacros", type: "IndexMacro")

@@ -591,12 +591,10 @@ let embeddingStore = try await VectorStore(
 
 ## 📚 Documentation
 
-- **[Architecture Guide](docs/architecture.md)** - Detailed design decisions
-- **[Layer Implementation Guide](docs/LAYER_IMPLEMENTATION_GUIDE.md)** - Complete guide to building custom data model layers (日本語)
-- **[FDBCore API Reference](docs/fdbcore-api.md)** - Client-side API
-- **[FDBRuntime API Reference](docs/fdbruntime-api.md)** - Server-side protocols
-- **[Built-in IndexKinds](docs/builtin-indexes.md)** - Index type reference
-- **[Custom IndexKind Tutorial](docs/custom-indexkind.md)** - Extend with your own
+- **[Architecture Guide](docs/architecture.md)** - Detailed design decisions (日本語)
+- **[Design Decisions](docs/SIMPLIFIED_DESIGN.md)** - Key design decisions and migration notes
+- **[ID Design](docs/ID-DESIGN.md)** - ID management design
+- **[Container Configuration](docs/CONTAINER-CONFIGURATION-DESIGN.md)** - FDBContainer/FDBConfiguration design
 
 ---
 
@@ -629,7 +627,7 @@ MIT License - See [LICENSE](LICENSE) for details
 
 **Status**: ✅ **Production Ready** - 4-module architecture (FDBModel → FDBCore → FDBIndexing → FDBRuntime), IndexMaintainer protocol established, DataAccess utilities implemented. IndexMaintainer implementations in fdb-indexes package.
 
-**Last Updated**: 2025-11-28
+**Last Updated**: 2025-11-29
 
 ---
 

@@ -4,8 +4,6 @@
 // Provides runtime configuration for indexes that need heavy parameters
 // (HNSW, full-text search, etc.) separate from compile-time IndexKind metadata.
 
-import Foundation
-
 /// Protocol for defining runtime index configuration
 ///
 /// **Purpose**: Separate heavy, environment-dependent parameters from IndexKind.

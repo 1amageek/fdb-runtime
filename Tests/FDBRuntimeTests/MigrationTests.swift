@@ -507,7 +507,7 @@ struct MigrationTests {
         )
 
         // Single update
-        var updatedRecord = BatchTestUser(id: updateId, name: "ToUpdate", status: "updated")
+        let updatedRecord = BatchTestUser(id: updateId, name: "ToUpdate", status: "updated")
         try await context.update(updatedRecord)
 
         // Single delete

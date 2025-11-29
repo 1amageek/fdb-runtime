@@ -438,23 +438,6 @@ struct Member {
 // FDBキー: [R]/User/[id]（変わらない）
 ```
 
-## 実装タスク
-
-1. `#PrimaryKey`マクロを削除
-2. `@Persistable`マクロを修正
-   - `id`フィールドがなければ`var id: String = ULID().ulidString`を追加
-   - `id`フィールドがあればそのまま使用
-   - `id`を含まない初期化子を生成
-   - `type`パラメータをサポート
-3. `Persistable`プロトコルに`id`要件を追加
-4. ULID生成の実装をFDBModelに追加
-5. FDBStore APIの更新（`item.id`を使用）
-6. ユニークインデックスのatomic操作実装
-7. CLAUDE.mdの更新
-8. 関連テストの更新
-
-**注**: 現在開発中のため、これらは破壊的変更として扱います。マイグレーションは提供しません。
-
 ## 参考資料
 
 - [ULID Specification](https://github.com/ulid/spec)

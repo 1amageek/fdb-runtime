@@ -4,8 +4,6 @@
 // Declares how indexes structure FDB key space.
 // DirectoryLayer usage decision is delegated to execution layer (IndexManager).
 
-import Foundation
-
 /// Index Subspace structure type
 ///
 /// **About DirectoryLayer**:

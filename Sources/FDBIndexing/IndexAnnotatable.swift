@@ -5,7 +5,6 @@
 // This protocol provides a minimal, FDB-independent way to declare
 // index metadata for models.
 
-import Foundation
 import FDBModel
 
 /// Protocol for types that can provide index metadata.

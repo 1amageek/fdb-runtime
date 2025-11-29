@@ -3,7 +3,6 @@
 //
 // Provides runtime type dispatch for OnlineIndexer instantiation.
 
-import Foundation
 import FoundationDB
 import FDBModel
 import FDBCore

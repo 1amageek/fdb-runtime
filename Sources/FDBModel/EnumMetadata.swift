@@ -1,5 +1,3 @@
-import Foundation
-
 /// Metadata for enum types
 ///
 /// Provides information about enum cases for serialization and validation.

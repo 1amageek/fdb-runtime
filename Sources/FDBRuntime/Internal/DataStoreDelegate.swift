@@ -1,5 +1,3 @@
-import Foundation
-
 /// Internal delegate protocol for data store operation callbacks
 ///
 /// This protocol enables separation of metrics collection from core data store logic.

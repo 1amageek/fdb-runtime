@@ -4,8 +4,6 @@
 // Helper functions for use in IndexKind.validateTypes() implementations.
 // Provides type checking using actual type metatypes.
 
-import Foundation
-
 /// Helper functions for type validation
 ///
 /// **Purpose**: Used in IndexKindProtocol.validateTypes() implementations

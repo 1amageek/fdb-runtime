@@ -364,8 +364,8 @@ internal final class FDBDataStore: DataStore, Sendable {
             // Check if first keyPaths have matching equals conditions
             var matchCount = 0
             for keyPath in descriptor.keyPaths {
-                // Convert AnyKeyPath to String using Persistable's fieldName method
-                let fieldName = T.fieldName(for: keyPath as! PartialKeyPath<T>)
+                guard let partialKeyPath = keyPath as? PartialKeyPath<T> else { break }
+                let fieldName = T.fieldName(for: partialKeyPath)
                 if let condition = conditionsByField[fieldName], condition.op == .equal {
                     matchCount += 1
                 } else {
@@ -375,8 +375,9 @@ internal final class FDBDataStore: DataStore, Sendable {
 
             if matchCount >= 2 {
                 // Use first condition for this compound index
-                if let firstKeyPath = descriptor.keyPaths.first {
-                    let firstFieldName = T.fieldName(for: firstKeyPath as! PartialKeyPath<T>)
+                if let firstKeyPath = descriptor.keyPaths.first,
+                   let partialKeyPath = firstKeyPath as? PartialKeyPath<T> {
+                    let firstFieldName = T.fieldName(for: partialKeyPath)
                     if let condition = conditionsByField[firstFieldName] {
                         return condition
                     }
@@ -409,9 +410,9 @@ internal final class FDBDataStore: DataStore, Sendable {
     ) -> IndexDescriptor? {
         // Find an index where the first keyPath matches the condition's field
         for descriptor in descriptors {
-            if let firstKeyPath = descriptor.keyPaths.first {
-                // Convert AnyKeyPath to String using Persistable's fieldName method
-                let fieldName = T.fieldName(for: firstKeyPath as! PartialKeyPath<T>)
+            if let firstKeyPath = descriptor.keyPaths.first,
+               let partialKeyPath = firstKeyPath as? PartialKeyPath<T> {
+                let fieldName = T.fieldName(for: partialKeyPath)
                 if fieldName == condition.fieldName {
                     return descriptor
                 }
@@ -1030,10 +1031,10 @@ internal final class FDBDataStore: DataStore, Sendable {
         newModel: T?,
         transaction: any TransactionProtocol
     ) async throws {
-        guard descriptor.keyPaths.count >= 2 else { return }
+        guard descriptor.keyPaths.count >= 2,
+              let valueKeyPath = descriptor.keyPaths.last else { return }
 
         let groupKeyPaths = Array(descriptor.keyPaths.dropLast())
-        let valueKeyPath = descriptor.keyPaths.last!
 
         // Calculate delta: newValue - oldValue
         var oldNumeric: Double = 0.0
@@ -1103,10 +1104,10 @@ internal final class FDBDataStore: DataStore, Sendable {
         id: Tuple,
         transaction: any TransactionProtocol
     ) async throws {
-        guard descriptor.keyPaths.count >= 2 else { return }
+        guard descriptor.keyPaths.count >= 2,
+              let valueKeyPath = descriptor.keyPaths.last else { return }
 
         let groupKeyPaths = Array(descriptor.keyPaths.dropLast())
-        let valueKeyPath = descriptor.keyPaths.last!
 
         // Remove old entry
         if let old = oldModel {

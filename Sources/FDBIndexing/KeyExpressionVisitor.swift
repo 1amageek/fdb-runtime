@@ -1,4 +1,3 @@
-import Foundation
 import FoundationDB
 
 /// Visitor pattern for traversing and evaluating KeyExpressions

@@ -4,7 +4,11 @@
 // These implementations are FDB-independent and can be used across all platforms.
 // They are automatically available when importing FDBModel.
 
-import Foundation
+#if canImport(Foundation)
+import struct Foundation.TimeInterval
+#else
+public typealias TimeInterval = Double
+#endif
 
 // MARK: - ScalarIndexKind
 
@@ -143,8 +147,7 @@ public struct SumIndexKind: IndexKind {
                 )
             }
         }
-        // Validate value field (last) is Numeric
-        let valueType = types.last!
+        guard let valueType = types.last else { return }
         guard TypeValidation.isNumeric(valueType) else {
             throw IndexTypeValidationError.unsupportedType(
                 index: identifier,
@@ -299,8 +302,7 @@ public struct AverageIndexKind: IndexKind {
                 )
             }
         }
-        // Validate value field (last) is Numeric
-        let valueType = types.last!
+        guard let valueType = types.last else { return }
         guard TypeValidation.isNumeric(valueType) else {
             throw IndexTypeValidationError.unsupportedType(
                 index: identifier,

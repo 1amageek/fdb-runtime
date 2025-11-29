@@ -1,4 +1,4 @@
-import Foundation
+import struct Foundation.Date
 
 /// ULID (Universally Unique Lexicographically Sortable Identifier)
 ///

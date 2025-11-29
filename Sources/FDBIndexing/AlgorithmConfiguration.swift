@@ -3,8 +3,6 @@
 //
 // Allows runtime selection of index algorithms without changing model definitions.
 
-import Foundation
-
 /// Runtime algorithm configuration for indexes
 ///
 /// **Purpose**: Separate model definition (data structure) from runtime optimization (algorithm)

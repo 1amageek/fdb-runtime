@@ -3,8 +3,6 @@
 //
 // Common options that apply to all index kinds.
 
-import Foundation
-
 /// Common configuration options shared across all index kinds.
 ///
 /// These options apply regardless of the specific IndexKind:
